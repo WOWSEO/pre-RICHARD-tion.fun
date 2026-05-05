@@ -21,7 +21,6 @@ services:
     plan: free
     buildCommand: npm install --include=dev --legacy-peer-deps --ignore-scripts && npm run build:server
     startCommand: npm run server
-    healthCheckPath: /healthz
     envVars:
       - key: NODE_VERSION
         value: "24.14.1"

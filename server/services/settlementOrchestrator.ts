@@ -4,8 +4,10 @@ import { settleMarket } from "../../src/market/settlementEngine";
 import { TROLL } from "../../src/config/troll";
 import { DexScreenerProvider } from "../../src/providers/dexScreenerProvider";
 import { GeckoTerminalProvider } from "../../src/providers/geckoTerminalProvider";
+import { CachedBrainProvider } from "./cachedBrainProvider";
 import type { User } from "../../src/market/marketTypes";
 import { seedSingle } from "./marketSeeder";
+import type { LiveSnapshot } from "./marketSnapshot";
 
 /**
  * Server-side settlement.
@@ -26,7 +28,10 @@ import { seedSingle } from "./marketSeeder";
  * The atomic claim in step 1 fixes this: only one worker can transition the
  * market into 'settling', the rest see "already_in_flight_or_terminal".
  */
-export async function settleMarketViaWorker(marketId: string): Promise<{
+export async function settleMarketViaWorker(
+  marketId: string,
+  preFetchedSnapshot?: LiveSnapshot,
+): Promise<{
   marketId: string;
   outcome: "YES" | "NO" | "VOID";
   voidReason: string | null;
@@ -96,7 +101,16 @@ export async function settleMarketViaWorker(marketId: string): Promise<{
   const wallets = new Set(market.positions.map((p) => p.wallet));
   const users: User[] = Array.from(wallets).map((w) => ({ wallet: w, trollBalance: 0 }));
 
-  const providers = [new DexScreenerProvider(), new GeckoTerminalProvider()];
+  // Settlement-time providers — wrapped with CachedBrainProvider so the
+  // brain's per-timestamp polling falls back to oracle_snapshots when
+  // DexScreener / GeckoTerminal 429.  This is the same cache the tick
+  // endpoint populates; settlement and seeding share one freshness window.
+  // When BOTH live and cache fail, the wrapper returns the live error
+  // verbatim and the brain voids with a clear reason.
+  const providers = [
+    new CachedBrainProvider(new DexScreenerProvider()),
+    new CachedBrainProvider(new GeckoTerminalProvider()),
+  ];
   console.info(
     `[settle] running-brain market=${marketId} positions=${market.positions.length} ` +
       `users=${users.length}`,
@@ -251,15 +265,22 @@ export async function settleMarketViaWorker(marketId: string): Promise<{
   // type at all times.  Now that this market is terminal, immediately seed
   // the replacement so the slot doesn't sit empty waiting for the next cron
   // tick.  Failures here are NON-FATAL — the seed cron will pick it up.
+  //
+  // We pass `preFetchedSnapshot` (when the caller is the tick endpoint, this
+  // is the SAME snapshot used by the sweep-seed pass) so we don't trigger an
+  // independent DexScreener / GeckoTerminal hit per settled market.  Without
+  // this, settling 3 stuck markets in a single tick fires 3 provider calls
+  // ON TOP OF the sweep-seed call → 4 hits/min/cron → guaranteed 429s.
   let nextMarketId: string | null = null;
   let nextSeedReason: string | null = null;
   try {
-    const seedResult = await seedSingle(marketRow.schedule_type);
+    const seedResult = await seedSingle(marketRow.schedule_type, preFetchedSnapshot);
     if (seedResult.created) {
       nextMarketId = seedResult.marketId ?? null;
       console.info(
         `[settle] handoff-created market=${marketId} → next=${nextMarketId} ` +
-          `schedule=${marketRow.schedule_type}`,
+          `schedule=${marketRow.schedule_type}` +
+          (preFetchedSnapshot ? ` (using pre-fetched snapshot)` : ""),
       );
     } else {
       nextSeedReason = seedResult.reason ?? null;

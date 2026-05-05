@@ -12,7 +12,7 @@
   publish = "dist"
 
 [build.environment]
-  NODE_VERSION = "20"
+  NODE_VERSION = "22"
 
 # SPA fallback: every URL that doesn't match a real file should serve
 # index.html so React Router can take over.  Without this, hitting
