@@ -241,17 +241,35 @@ export async function seedSingle(
 /**
  * Walk all 3 schedule types and seed any empty slot.
  *
- * Snapshot strategy:
- *   - First, list which schedules are currently empty (one cheap query).
- *   - If none are empty → return early without hitting any snapshot provider.
- *   - If some are empty → fetch ONE snapshot and pass it to every seedSingle
- *     call.  This keeps the per-tick provider hit count to 1 instead of 3,
- *     which is what causes the 429 cascade in production.
+ * Snapshot strategy (v19 product-rule change):
+ *   Each schedule's market gets its OWN fresh snapshot at its OWN opening
+ *   moment.  We no longer reuse one snapshot across multiple schedules in
+ *   normal operation — that produced identical openMc / targetMc on every
+ *   schedule when the cron filled multiple slots in the same tick (cold
+ *   start, post-outage backfill).  Per the spec:
  *
- * The optional `preBuiltSnapshot` parameter lets the manual-snapshot admin
- * endpoint inject an operator-supplied value, bypassing live fetches
- * entirely — useful when DexScreener / GeckoTerminal are both unhappy and
- * the operator just wants to unstick the lifecycle.
+ *     "fetch one live snapshot only for schedules that are actually opening
+ *      at that tick.  If multiple schedules open at exactly the same
+ *      timestamp, they may share that snapshot — otherwise each schedule
+ *      keeps its own target from its own opening time."
+ *
+ *   In practice, each empty schedule's seedSingle is called sequentially
+ *   without a preFetched value, so each one calls fetchTrollSnapshot()
+ *   itself.  The snapshots will all reflect "MC right now," but each is
+ *   sourced independently from that schedule's own moment of opening.
+ *
+ *   Manual emergency override:
+ *   When `preBuiltSnapshot` IS supplied (operator manual seed), all empty
+ *   schedules share it.  This is the EMERGENCY FALLBACK behavior — kept
+ *   so an operator can unstick the lifecycle when both providers are down.
+ *   The /api/admin/seed-markets-from-manual-snapshot endpoint is the only
+ *   intended caller for that path.
+ *
+ *   Burst protection:
+ *   If 3 schedules need filling at once (true cold-start), this triggers
+ *   3 sequential provider calls.  That is well under DexScreener's 60
+ *   req/min limit and the snapshot service has DexScreener → Gecko →
+ *   cache fallback already, so the burst is safe.
  *
  * Returns a structured summary.  Per-schedule failures (snapshot unavailable,
  * race lost, etc.) are reflected in `results[].reason` — the tick endpoint
@@ -288,23 +306,14 @@ export async function ensureOneActivePerSchedule(
     };
   }
 
-  // 3) Acquire the snapshot ONCE for all needed creates.
-  let snapshot: LiveSnapshot | null = preBuiltSnapshot ?? null;
-  let snapshotError: string | null = null;
-  if (!snapshot) {
-    console.info(`[seed] ensure-fetching needsFill=${needsFill.join(",")}`);
-    try {
-      snapshot = await fetchTrollSnapshot();
-    } catch (err) {
-      snapshotError = (err as Error).message;
-      console.warn(`[seed] ensure-snapshot-failed reason=${snapshotError}`);
-    }
-  }
+  console.info(
+    `[seed] ensure needsFill=${needsFill.join(",")} ` +
+      `mode=${preBuiltSnapshot ? "manual-override (shared)" : "auto (per-schedule fresh)"}`,
+  );
 
-  // 4) Walk all 3 schedules, building a per-schedule result.  Already-active
-  // schedules return immediately; empty schedules either get the snapshot
-  // (and a real seed attempt) or get the snapshot error verbatim as their
-  // reason — so the tick endpoint can put it in errors[].
+  // 3) Walk all 3 schedules.  Already-active → no-op.  Empty schedules:
+  //    - manual override: share the operator-supplied snapshot
+  //    - auto path: pass undefined so seedSingle fetches its own fresh
   const results: SeedSingleResult[] = [];
   for (const sched of ALL_SCHEDULES) {
     const active = activeBySched.get(sched);
@@ -317,24 +326,16 @@ export async function ensureOneActivePerSchedule(
       });
       continue;
     }
-    if (snapshot) {
-      try {
-        results.push(await seedSingle(sched, snapshot));
-      } catch (err) {
-        results.push({
-          scheduleType: sched,
-          created: false,
-          reason: `error: ${(err as Error).message}`,
-        });
-      }
-    } else {
+    try {
+      // preBuiltSnapshot is shared across all schedules ONLY when explicitly
+      // supplied (manual emergency seed).  Otherwise pass undefined so each
+      // seedSingle fetches its own fresh snapshot — that's the v19 fix.
+      results.push(await seedSingle(sched, preBuiltSnapshot));
+    } catch (err) {
       results.push({
         scheduleType: sched,
         created: false,
-        // snapshotError is the verbatim error string from fetchTrollSnapshot —
-        // e.g. "snapshot_unavailable_no_fresh_cache: dexscreener: dexscreener_429
-        // | geckoterminal: geckoterminal_429 | cache: missing".
-        reason: snapshotError ?? "snapshot_unavailable",
+        reason: `error: ${(err as Error).message}`,
       });
     }
   }

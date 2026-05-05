@@ -9,9 +9,6 @@ export function TrollPage() {
   const { markets, loading, error } = useServerMarkets();
   const { data, loading: mdLoading } = useTrollMarketData();
 
-  // Active picks — one per schedule, priority + latest closeAt.  The
-  // separate `recent` section below is a deliberate history feed of
-  // settled/voided markets, not a fallback list.
   const open = pickActivePanelMarkets(markets);
   const recent = markets.filter((m) => m.status === "settled" || m.status === "voided").slice(0, 6);
 

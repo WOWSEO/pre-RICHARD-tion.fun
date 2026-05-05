@@ -48,10 +48,6 @@ export function pickMarketForSchedule(
   return best;
 }
 
-/**
- * One slot per [15m, hourly, daily] in fixed order.  An entry's `market`
- * is null only when the API has zero rows for that schedule (cold start).
- */
 export function pickPanelMarkets(
   all: readonly MarketSummary[],
 ): Array<{ scheduleType: ScheduleType; market: MarketSummary | null }> {
@@ -61,11 +57,6 @@ export function pickPanelMarkets(
   }));
 }
 
-/**
- * The 0-3 actively-tradable picks (one per schedule), filtered to OPEN or
- * LOCKED only — schedules whose top-priority pick is below LOCKED are
- * excluded so home-page "live markets" sections don't list stale rows.
- */
 export function pickActivePanelMarkets(
   all: readonly MarketSummary[],
 ): MarketSummary[] {

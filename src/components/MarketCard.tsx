@@ -20,8 +20,7 @@ export function MarketCard({ market }: { market: MarketSummary }) {
   const { hh, mm, ss, expired } = useCountdown(closeAtDate);
   const status = market.status;
   const tradable = status === "open";
-  // req 3: open + zero activity → show "Waiting for first prediction"
-  // instead of bare "0 · 0" volume / OI numbers (which read as broken).
+  // req 3: open + zero activity → "Waiting for first prediction"
   const awaitingFirstTrade = tradable && market.volume === 0 && market.openInterest === 0;
 
   const closeLabel = formatCloseLabel(closeAtDate);
@@ -32,26 +31,22 @@ export function MarketCard({ market }: { market: MarketSummary }) {
       to={`/market/${market.id}`}
       className="group relative flex flex-col gap-4 rounded-3xl glass p-5 shadow-glass transition hover:-translate-y-0.5 hover:shadow-glass-lift sm:p-6"
     >
-      {/* top row: schedule pill + status */}
       <div className="flex items-start justify-between gap-3">
         <SchedulePill scheduleType={market.scheduleType} />
         <StatusBadge status={status} />
       </div>
 
-      {/* question */}
       <p className="font-display text-lg font-semibold leading-snug tracking-tight text-ink-200 sm:text-xl">
         Will $TROLL be over{" "}
         <span className="bg-yes/30 px-1.5 py-0.5 rounded">{targetMcLabel}</span>{" "}
         MC at <span className="font-mono">{closeLabel}</span>?
       </p>
 
-      {/* yes/no price chips */}
       <div className="grid grid-cols-2 gap-2.5">
         <PriceChip side="YES" cents={market.yesPriceCents} />
         <PriceChip side="NO" cents={market.noPriceCents} />
       </div>
 
-      {/* footer: countdown + (volume/OI OR waiting-state) */}
       <div className="flex items-end justify-between border-t border-ink-200/10 pt-3 text-xs text-ink-100">
         <div>
           <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-100/60">
@@ -88,7 +83,6 @@ export function MarketCard({ market }: { market: MarketSummary }) {
         </div>
       </div>
 
-      {/* hover arrow */}
       <span
         aria-hidden
         className="pointer-events-none absolute right-5 top-5 text-ink-100/30 transition group-hover:text-ink-200 sm:right-6 sm:top-6"

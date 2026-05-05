@@ -167,14 +167,18 @@ adminRouter.post("/tick-markets", async (req, res) => {
 /* POST /api/admin/seed-markets-from-manual-snapshot                          */
 /* Body: { marketCap: number, priceUsd?: number, source?: string }            */
 /*                                                                            */
-/* Escape hatch for prolonged DexScreener / GeckoTerminal rate-limiting.      */
-/* Operator supplies a market-cap value (and optionally a price); the         */
-/* endpoint wraps it into a synthetic snapshot, persists it to the            */
-/* oracle_snapshots cache (so subsequent automatic ticks fall back to it),    */
-/* and runs ensureOneActivePerSchedule with the manual snapshot — creating    */
-/* whichever of {15m, hourly, daily} are currently empty.                     */
+/* ⚠ EMERGENCY FALLBACK ONLY ⚠                                                */
 /*                                                                            */
-/* This endpoint should ONLY be used during a confirmed provider outage.      */
+/* This endpoint is for use during a CONFIRMED prolonged outage of both       */
+/* DexScreener and GeckoTerminal.  It seeds whichever of {15m, hourly, daily} */
+/* are currently empty using ONE shared operator-supplied market cap.  The    */
+/* shared value violates the v19 product rule that "each schedule keeps its   */
+/* own target from its own opening time" — but it's preserved here so an      */
+/* operator can unstick the lifecycle when no live data is available at all.  */
+/*                                                                            */
+/* For routine per-schedule manual seeding (one schedule, fresh value), use   */
+/* POST /api/admin/seed-market-from-manual-snapshot (singular) instead.       */
+/*                                                                            */
 /* The supplied marketCap becomes open_mc / target_mc on every market it      */
 /* creates, so a wrong value will distort settlement outcomes.                */
 /* ========================================================================== */
@@ -192,8 +196,9 @@ adminRouter.post("/seed-markets-from-manual-snapshot", async (req, res) => {
         ? Number(body.priceUsd)
         : undefined;
 
-    console.info(
-      `[admin/manual-seed] mc=$${(marketCap / 1e6).toFixed(2)}M ` +
+    console.warn(
+      `[admin/manual-seed] EMERGENCY FALLBACK invoked.  ` +
+        `mc=$${(marketCap / 1e6).toFixed(2)}M ` +
         `price=${priceUsd ?? "auto"} source=${body.source ?? "manual"}`,
     );
 
@@ -217,6 +222,13 @@ adminRouter.post("/seed-markets-from-manual-snapshot", async (req, res) => {
     );
     res.json({
       ok: true,
+      // v19: response calls out the emergency-only nature so anyone reading
+      // logs / curl output can't mistake this for the routine seed path.
+      mode: "emergency_fallback_shared_snapshot",
+      note:
+        "Emergency fallback only — all empty schedules share this single " +
+        "operator-supplied snapshot.  For per-schedule manual seeding, use " +
+        "POST /api/admin/seed-market-from-manual-snapshot (singular).",
       snapshot: {
         marketCap: snapshot.marketCapUsd,
         priceUsd: snapshot.priceUsd,
@@ -234,6 +246,100 @@ adminRouter.post("/seed-markets-from-manual-snapshot", async (req, res) => {
     const msg = (err as Error).message;
     console.error(`[admin/manual-seed] failed reason=${msg}`);
     await logAction(actor, "seed_markets_from_manual_snapshot", body, "error", msg);
+    res.status(400).json({ error: "manual_seed_failed", message: msg });
+  }
+});
+
+/* ========================================================================== */
+/* POST /api/admin/seed-market-from-manual-snapshot   (v19, singular)         */
+/* Body: {                                                                    */
+/*   scheduleType: "15m" | "hourly" | "daily",                                */
+/*   marketCap: number,                                                       */
+/*   priceUsd?: number,                                                       */
+/*   source?: string                                                          */
+/* }                                                                          */
+/*                                                                            */
+/* Per-schedule manual seed.  Use when ONE schedule's slot is empty and you   */
+/* want to give it a specific market cap (e.g., the value that was live at    */
+/* its actual opening boundary, when the live providers missed it).  Other    */
+/* schedules are NOT touched — this is the surgical alternative to the bulk   */
+/* emergency endpoint above.                                                  */
+/*                                                                            */
+/* Returns 409 if the named schedule already has an active market.            */
+/* ========================================================================== */
+adminRouter.post("/seed-market-from-manual-snapshot", async (req, res) => {
+  const actor = req.header("x-admin-actor") ?? "admin";
+  const body = req.body as {
+    scheduleType?: ScheduleType;
+    marketCap?: number;
+    priceUsd?: number;
+    source?: string;
+  };
+
+  try {
+    const scheduleType = body.scheduleType;
+    if (scheduleType !== "15m" && scheduleType !== "hourly" && scheduleType !== "daily") {
+      throw new Error("invalid_schedule_type");
+    }
+    const marketCap = Number(body.marketCap);
+    if (!Number.isFinite(marketCap) || marketCap <= 0) {
+      throw new Error("invalid_market_cap");
+    }
+    const priceUsd =
+      body.priceUsd != null && Number.isFinite(Number(body.priceUsd)) && Number(body.priceUsd) > 0
+        ? Number(body.priceUsd)
+        : undefined;
+
+    console.info(
+      `[admin/seed-one] schedule=${scheduleType} ` +
+        `mc=$${(marketCap / 1e6).toFixed(2)}M price=${priceUsd ?? "auto"} ` +
+        `source=${body.source ?? "manual_admin"}`,
+    );
+
+    const snapshot = await buildManualSnapshot({
+      marketCapUsd: marketCap,
+      priceUsd,
+      source: body.source ?? "manual_admin",
+    });
+
+    const result = await seedSingle(scheduleType, snapshot);
+    await logAction(
+      actor,
+      "seed_market_from_manual_snapshot",
+      { scheduleType, marketCap, priceUsd, source: body.source, result },
+      "ok",
+      null,
+    );
+
+    if (!result.created) {
+      // Most common no-op: schedule already has an active market.  Caller
+      // should void or wait for that one to settle before re-seeding.
+      const status = result.reason === "already_active" ? 409 : 200;
+      return res.status(status).json({
+        ok: false,
+        scheduleType,
+        created: false,
+        reason: result.reason,
+        marketId: result.marketId,
+      });
+    }
+
+    res.json({
+      ok: true,
+      scheduleType,
+      created: true,
+      marketId: result.marketId,
+      snapshot: {
+        marketCap: snapshot.marketCapUsd,
+        priceUsd: snapshot.priceUsd,
+        source: snapshot.source,
+        fetchedAt: snapshot.fetchedAt.toISOString(),
+      },
+    });
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error(`[admin/seed-one] failed reason=${msg}`);
+    await logAction(actor, "seed_market_from_manual_snapshot", body, "error", msg);
     res.status(400).json({ error: "manual_seed_failed", message: msg });
   }
 });

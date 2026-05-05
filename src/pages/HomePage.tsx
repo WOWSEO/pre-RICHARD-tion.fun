@@ -10,9 +10,7 @@ export function HomePage() {
   const { markets, loading, error } = useServerMarkets();
   const [showCotd, setShowCotd] = useState(false);
 
-  // Show only ACTIVE picks up top — one per schedule, priority + latest
-  // closeAt.  Old voided rows that sit alongside fresh open ones can't
-  // appear here; pickActivePanelMarkets filters to {open, locked} only.
+  // Show only ACTIVE picks up top — one per schedule, priority + latest closeAt.
   const openMarkets = pickActivePanelMarkets(markets);
 
   // Floating YES/NO chips read from the freshest active market.

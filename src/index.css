@@ -128,7 +128,7 @@ button, input { font: inherit; }
 .side-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }
 .side-row button { border: 0; border-radius: 17px; padding: 18px; font-weight: 1000; cursor: pointer; }
 .yes-side { background: #00ef61; color: #002010; }
-/* Item 9 — NO active state must read as strong as YES.  Brand "no" token
+/* v18 item 9 — NO active state must read as strong as YES.  Brand "no" token
    is #FF3D6F (pink/red).  The inline opacity:0.55 on inactive buttons in
    App.tsx provides the inactive/neutral feel; this rule guarantees that
    when NO is active it pops with the same intensity as #00ef61 YES. */
@@ -148,7 +148,7 @@ button, input { font: inherit; }
 .classic-float-card span { display: block; margin-top: 4px; font-size: 13px; opacity: .78; font-weight: 800; }
 .classic-float-card em { display: block; margin-top: 8px; color: rgba(255, 243, 228, .56); font-size: 11px; font-style: normal; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
 .live-clock { display: block; margin-top: 7px; color: #00ff69; font-size: 16px; line-height: 1; font-style: normal; font-weight: 1000; letter-spacing: .02em; text-shadow: 0 0 14px rgba(0,255,105,.55); }
-/* Item 5 — MC card sits in the empty gap between the copy card and the
+/* v18 item 5 — MC card sits in the empty gap between the copy card and the
    predict card.  Old position (right: 520px) put its right edge flush
    against the predict card's left edge, and the rotate(-4deg) made the
    corners poke into the predict panel on viewports under ~1280px wide.
@@ -209,7 +209,7 @@ button, input { font: inherit; }
   border: 0;
 }
 
-/* Item 2 — per-card "Closing soon" visual.  Pulses the timer text in
+/* v18 item 2 — per-card "Closing soon" visual.  Pulses the timer text in
    brand pink (matches NO accent) so users see the state shift without
    us blocking their entry.  The button itself stays clickable. */
 .market-option.closing-soon em {
@@ -231,10 +231,8 @@ button, input { font: inherit; }
   .classic-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
   .classic-hero { grid-template-columns: 1fr; gap: 24px; padding-top: 18px; }
   .classic-predict-card { justify-self: stretch; width: 100%; }
-  /* Default: hide the decorative YES/NO float cards on small viewports
-     since they're absolutely positioned for desktop layout. */
   .classic-float-card { display: none; }
-  /* Item 5 mobile — restore the MC card on small viewports, but as a
+  /* v18 item 5 mobile — restore the MC card on small viewports as a
      stacked block above the predict panel (no longer absolutely
      positioned, no rotation, full readable width). */
   .mc-card.is-live, .mc-card.is-stale {

@@ -1,7 +1,6 @@
 import { db, type MarketRow } from "../db/supabase";
 import { settleMarketViaWorker } from "./settlementOrchestrator";
 import { ensureOneActivePerSchedule, listActiveBySchedule } from "./marketSeeder";
-import { fetchTrollSnapshot, type LiveSnapshot } from "./marketSnapshot";
 import type { ScheduleType } from "../../src/market/marketTypes";
 
 /**
@@ -118,37 +117,20 @@ export async function tickMarkets(): Promise<TickResult> {
   const cutoff = new Date().toISOString();
   console.info(`[tick] BEGIN cutoff=${cutoff}`);
 
-  // ----- 0) Pre-fetch the TROLL snapshot ONCE for the whole tick. -----
-  // This single value is reused by:
-  //   a. settleMarketViaWorker → seedSingle (post-settle handoff)
-  //   b. ensureOneActivePerSchedule (sweep-seed at the end)
-  // Without this pre-fetch, EACH expired market's settle handoff fires its
-  // own provider call, plus the sweep-seed fires another, plus a fresh
-  // call per still-empty schedule.  In production (3 stuck markets), that
-  // multiplied to 4+ DexScreener hits per minute and produced the 429
-  // cascade.  ONE pre-fetch fixes the amplification.
+  // ----- 0) v19 product rule: do NOT pre-fetch a tick-wide snapshot. -----
+  // Each post-settle handoff and each empty-slot seed must take its OWN
+  // fresh snapshot at its own opening moment so 15m / hourly / daily get
+  // independent open_mc / target_mc values.  The previous behavior — one
+  // shared snapshot for the whole tick — produced identical targets across
+  // schedules whenever the tick filled multiple slots in the same run
+  // (cold start, post-outage backfill, missed-cron catch-up).
   //
-  // If the pre-fetch fails (both providers down + cache stale), we proceed
-  // with snapshot=undefined.  Each downstream consumer falls back to its own
-  // fetch — those hit the cache too, and the verbatim error string is
-  // surfaced in errors[] so the response never lies about why slots are
-  // empty.
-  let tickSnapshot: LiveSnapshot | undefined;
-  let preFetchError: string | null = null;
-  try {
-    tickSnapshot = await fetchTrollSnapshot();
-    console.info(
-      `[tick] snapshot acquired source=${tickSnapshot.source} ` +
-        `mc=$${(tickSnapshot.marketCapUsd / 1e6).toFixed(2)}M ` +
-        `fromCache=${tickSnapshot.fromCache} ageMs=${tickSnapshot.ageMs}`,
-    );
-  } catch (err) {
-    preFetchError = (err as Error).message;
-    console.warn(`[tick] snapshot pre-fetch failed reason=${preFetchError}`);
-    // We continue — settlement of expired markets still works (the brain
-    // collects its own snapshots via the providers), and the sweep-seed
-    // step will surface preFetchError in errors[] for any empty slots.
-  }
+  // Burst protection: in steady state a tick has at most one settle, so
+  // this is at most one provider call per tick.  At cold start with 3
+  // empty slots it's 3 sequential calls — well under DexScreener's 60
+  // req/min limit.  Any individual fetch failure is caught downstream
+  // (seedSingle returns { created: false, reason: <verbatim error> })
+  // and surfaced into errors[] without breaking the rest of the tick.
 
   // 1) Find every market past close_at with non-terminal status.
   const { data: expired, error: queryErr } = await sb
@@ -170,9 +152,10 @@ export async function tickMarkets(): Promise<TickResult> {
   for (const m of expired ?? []) {
     try {
       console.info(`[tick] settling market=${m.id} schedule=${m.schedule_type} status=${m.status}`);
-      // Pass tickSnapshot (may be undefined) so the post-settle handoff uses
-      // the same value as the rest of the tick — no extra provider hits.
-      const r = await settleMarketViaWorker(m.id, tickSnapshot);
+      // v19: no shared tick snapshot.  The settle worker's post-settle
+      // handoff to seedSingle will fetch its own fresh snapshot at the
+      // moment of the new market's opening (= now).
+      const r = await settleMarketViaWorker(m.id);
       settled.push({
         marketId: r.marketId,
         scheduleType: m.schedule_type,
@@ -229,19 +212,14 @@ export async function tickMarkets(): Promise<TickResult> {
   //    - schedules whose handed-off market just settled in step 2 but
   //      seedSingle hadn't been called for them yet
   //
-  // Important: the seeder fetches ONE snapshot for all 3 schedules in a
-  // single tick (not 3 separate fetches — that was the production 429
-  // amplifier).  Per-schedule failures come back in seedReport.results[i]
-  // as { created: false, reason: <string> } and we surface non-benign
-  // reasons into errors[] so the JSON response explains exactly why a slot
-  // is empty.
+  // v19: each empty schedule fetches its OWN fresh snapshot inside
+  // seedSingle.  We deliberately do NOT pass a shared snapshot here so
+  // that 15m / hourly / daily end up with independent open_mc values.
+  // Per-schedule failures come back in seedReport.results[i] as
+  // { created: false, reason: <string> } and we surface non-benign
+  // reasons into errors[].
   console.info(`[tick] sweep-seed`);
-  // Pass tickSnapshot (may be undefined).  When undefined, ensureOneActive-
-  // PerSchedule does its own fetch (which will hit the cache) and surfaces
-  // the verbatim snapshot_unavailable_no_fresh_cache error if all fallbacks
-  // fail.  Either way the seed sweep is honest about whether it could
-  // create the missing markets.
-  const seedReport = await ensureOneActivePerSchedule(tickSnapshot);
+  const seedReport = await ensureOneActivePerSchedule();
   for (const r of seedReport.results) {
     if (r.created && r.marketId) {
       // Avoid double-counting hand-off creations.

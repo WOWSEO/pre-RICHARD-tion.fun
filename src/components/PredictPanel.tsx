@@ -327,10 +327,7 @@ function confirmLabel(
 ): string {
   // req 7: disconnected → "Connect wallet to predict"
   if (!connected) return "Connect wallet to predict";
-  // req 7: connected + zero balance → echo the message-block copy on the
-  // button so the disabled state is self-explanatory at a glance.
   if (noTroll) return "No $TROLL detected";
-  // req 7 / req 1: not enterable → "Market closed" (never "locked").
   if (!tradable) return "Market closed";
   switch (phase.kind) {
     case "idle":

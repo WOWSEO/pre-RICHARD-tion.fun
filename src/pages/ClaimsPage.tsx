@@ -6,23 +6,16 @@ import { useUserWithdrawals } from "../hooks/useServerMarkets";
 import { WalletConnectButton } from "../components/WalletConnectButton";
 
 /**
- * /claims — branded payouts page (v18, item 6).
+ * /claims — branded payouts page (v18, item 6 / v19, item 24).
  *
- * Replaces the prior single-list view with three distinct sections so the
- * user can scan their payouts at a glance:
+ * Three sections so the user can scan their payouts at a glance:
  *
  *   - Claimable winnings  → settlement payouts (reason="payout") still pending
  *   - Refunds             → void refunds       (reason="refund") still pending
+ *                           also covers exit refunds (reason="exit") still pending
  *   - Settled history     → everything already confirmed (any reason)
  *
- * "exit" rows (early-exit refunds from selling on the AMM) live under
- * Refunds when pending and Settled history when confirmed — they're
- * conceptually money-back rather than money-won.
- *
- * Sections collapse cleanly when empty:
- *   - if all three are empty → render the spec's "No payouts yet" state
- *   - otherwise empty buckets are hidden (keep the page focused on what
- *     the user can act on right now)
+ * Empty buckets are hidden so the page focuses on what the user can act on.
  *
  * Disconnected → "Connect wallet to view payouts".
  * Loading      → "Payouts are syncing" (intentionally non-scary copy).
@@ -34,9 +27,9 @@ export function ClaimsPage() {
   const walletAddr = publicKey?.toBase58() ?? null;
   const { withdrawals, loading, error, refresh } = useUserWithdrawals(walletAddr);
 
-  // ---------- Group by status × reason — must be called unconditionally
-  // so the hook order stays stable across renders (the disconnected return
-  // below would otherwise short-circuit the hook list). --------------------
+  // Group by status × reason — must be called unconditionally so the hook
+  // order stays stable across renders (the disconnected return below would
+  // otherwise short-circuit the hook list).
   const buckets = useMemo(() => {
     const claimable = withdrawals.filter(
       (w) => (w.status === "pending" || w.status === "sent") && w.reason === "payout",
@@ -118,11 +111,7 @@ export function ClaimsPage() {
           </div>
         </div>
 
-        {/* ---------- Soft sync banner (replaces error toast) ----------
-            req 6: "If API data is unavailable, show a clean non-scary
-            state: 'Payouts are syncing'."  We surface the technical
-            detail under it so debugging is still possible without
-            showing a red error toast as the page's main content. */}
+        {/* ---------- Soft sync banner — non-scary loading / error ---------- */}
         {(loading || error) && (
           <div className="mt-5 rounded-2xl glass-dark px-4 py-3 ring-1 ring-cream-100/10">
             <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-yes">

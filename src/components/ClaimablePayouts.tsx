@@ -7,21 +7,13 @@ import { formatTrollBalance } from "../services/trollBalance";
 /**
  * Lists every escrow_withdrawal for a wallet — pending, sent, confirmed.
  *
- * Pending = waiting on a sweep / user claim / admin run to actually broadcast.
- * Sent    = transaction broadcast, awaiting cluster confirmation.
- * Confirmed = $TROLL is in the recipient wallet, with a Solscan link.
+ * `buttonLabel` (v18, item 6) controls the action button copy:
+ *   "Claim" for winnings, "Refund" for void/exit refunds.  Defaults to "Claim".
  *
  * `connectedWallet` (when supplied) enables the inline action button on every
- * `pending` row whose wallet matches.  That button calls /api/positions/
- * withdrawals/:id/claim, which is the SAME server-side path the admin and
- * cron use — same atomic CAS, same SPL transfer, same idempotency.
+ * `pending` row whose wallet matches.
  *
- * `buttonLabel` (v18, item 6) controls the button copy: "Claim" for
- * winnings, "Refund" for void/exit refunds.  Defaults to "Claim".
- *
- * `onClaimed(id)` is invoked after a successful claim so the parent can
- * refresh its list (the row will already have moved to status='confirmed' by
- * the time the call returns at "confirmed" commitment).
+ * `onClaimed(id)` is invoked after a successful claim so the parent can refresh.
  */
 export function ClaimablePayouts({
   withdrawals,
@@ -45,7 +37,6 @@ export function ClaimablePayouts({
     return filtered;
   }, [withdrawals, filterMarketId]);
 
-  // Track which rows have a claim in flight so we can disable + label per-row.
   const [busyId, setBusyId] = useState<number | null>(null);
   const [errorById, setErrorById] = useState<Record<number, string>>({});
 
@@ -130,8 +121,8 @@ export function ClaimablePayouts({
                 signature={w.signature}
                 reason={w.failure_reason}
               />
-              {/* Item 6 — "View market" link on every row, regardless of
-                  status, so users can audit where each row came from. */}
+              {/* v18 item 6 — "View market" link on every row when not
+                  scoped to a single market.  Lets users audit each row. */}
               {!filterMarketId && (
                 <Link
                   to={`/market/${w.market_id}`}

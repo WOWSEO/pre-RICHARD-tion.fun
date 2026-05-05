@@ -168,12 +168,7 @@ function fmtCents(c: number | undefined | null): string {
  * Selection rules live in `services/marketSelection.ts` (single source of
  * truth — also used by HomePage and TrollPage).  Priority order:
  *   open > locked > settling > settled > voided
- * Within a status bucket the LATEST closeAt wins (req 4).
- *
- * Render-state mapping (the renderer below already understands this shape):
- *   "active"    → real MarketOptionButton (any non-settling pick)
- *   "settling"  → "Settling…" placeholder for the brief gap window
- *   "missing"   → "Creating market…" placeholder when no row exists at all
+ * Within a status bucket the LATEST closeAt wins.
  */
 const PANEL_SLOTS: ScheduleType[] = ["15m", "hourly", "daily"];
 
@@ -244,9 +239,9 @@ function Brand() {
  * What changed:
  *   - The hardcoded `markets` array is gone.
  *   - The predict card pulls real markets from /api/markets, and:
- *       · option buttons render real (id, schedule, closeAt, prices, volume)
+ *       · option buttons render real (id, schedule, lockAt, prices, volume)
  *       · YES/NO floating cards reflect the SELECTED real market's prices
- *       · the timer pill counts down to the SELECTED market's closeAt
+ *       · the timer pill counts down to the SELECTED market's lockAt
  *       · the question heading shows the selected market's real target_mc
  *       · the YES/NO side toggle drives an auto-debounced /quote call
  *       · the amount input + MAX uses the real wallet $TROLL balance
@@ -757,8 +752,8 @@ function MarketOptionButton({
   onClick: () => void;
 }) {
   // v17: countdown ticks to closeAt (not lockAt).  The "Closing soon" chip
-  // (item 2) appears in the final 60s — no entry blocking, just a visual
-  // cue that price action is most volatile right now.
+  // appears in the final 60s — no entry blocking, just a visual cue that
+  // price action is most volatile right now.
   const closeAtDate = useMemo(() => new Date(market.closeAt), [market.closeAt]);
   const time = useShortCountdown(closeAtDate);
   const [nowMs, setNowMs] = useState(() => Date.now());
