@@ -1,0 +1,816 @@
+import { useEffect, useMemo, useState } from "react";
+import { Route, Routes, Link, useNavigate } from "react-router-dom";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { PublicKey } from "@solana/web3.js";
+import { WalletConnectButton } from "./components/WalletConnectButton";
+import { AdminPage } from "./pages/AdminPage";
+import { MarketPage } from "./pages/MarketPage";
+import { AuditPage } from "./pages/AuditPage";
+import { TrollPage } from "./pages/TrollPage";
+import { ClaimsPage } from "./pages/ClaimsPage";
+import { useServerMarkets, useUserWithdrawals } from "./hooks/useServerMarkets";
+import { useTrollBalance } from "./hooks/useTrollBalance";
+import { useShortCountdown } from "./hooks/useShortCountdown";
+import { api, type MarketSummary } from "./services/apiClient";
+import { depositToEscrow, getTrollDecimals } from "./services/escrow";
+import { formatTrollBalance } from "./services/trollBalance";
+import type { Side, TradeQuote, ScheduleType } from "./market/marketTypes";
+
+/* ------------------------------------------------------------------------- *
+ * Live $TROLL ticker for the floating MC card.
+ * Untouched from the prior version — same DexScreener pair source, same
+ * 2-second cadence, same error handling.  Do NOT redesign this.
+ * ------------------------------------------------------------------------- */
+
+type TrollTicker = {
+  priceUsd: number | null;
+  marketCapUsd: number | null;
+  updatedAt: Date | null;
+  error: string | null;
+};
+
+const emptyTicker: TrollTicker = { priceUsd: null, marketCapUsd: null, updatedAt: null, error: null };
+
+function getTrollPairAddress() {
+  const configured = import.meta.env.VITE_DEXSCREENER_PAIR_URL || "https://dexscreener.com/solana/4w2cysotx6czaugmmwg13hdpy4qemg2czekyeqyk9ama";
+  return configured.split("/").filter(Boolean).pop() || "4w2cysotx6czaugmmwg13hdpy4qemg2czekyeqyk9ama";
+}
+
+function getDexScreenerApiUrl() {
+  return `https://api.dexscreener.com/latest/dex/pairs/solana/${getTrollPairAddress()}`;
+}
+
+function getDexScreenerEmbedUrl() {
+  return `https://dexscreener.com/solana/${getTrollPairAddress()}?embed=1&theme=dark&trades=0&info=1`;
+}
+
+function useTrollTicker() {
+  const [ticker, setTicker] = useState<TrollTicker>(emptyTicker);
+  const apiUrl = useMemo(getDexScreenerApiUrl, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTicker() {
+      try {
+        const response = await fetch(apiUrl, { cache: "no-store" });
+        if (!response.ok) throw new Error(`DexScreener ${response.status}`);
+        const data = await response.json();
+        const pair = data?.pair;
+        const priceUsd = Number(pair?.priceUsd);
+        const marketCapUsd = Number(pair?.fdv ?? pair?.marketCap);
+
+        if (!Number.isFinite(priceUsd) || !Number.isFinite(marketCapUsd)) {
+          throw new Error("Missing live $TROLL price data");
+        }
+
+        if (!cancelled) {
+          setTicker({ priceUsd, marketCapUsd, updatedAt: new Date(), error: null });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setTicker((current) => ({
+            ...current,
+            error: error instanceof Error ? error.message : "Price feed unavailable",
+          }));
+        }
+      }
+    }
+
+    loadTicker();
+    const timer = window.setInterval(loadTicker, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [apiUrl]);
+
+  return ticker;
+}
+
+function formatUsdPrice(value: number | null) {
+  if (value == null) return "$--";
+  if (value >= 1) return `$${value.toFixed(2)}`;
+  return `$${value.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 6 })}`;
+}
+
+function formatMarketCap(value: number | null) {
+  if (value == null) return "$--";
+  if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(2)}K`;
+  return `$${value.toFixed(0)}`;
+}
+
+function useLiveClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return now;
+}
+
+function formatLiveClock(value: Date) {
+  return value.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+
+function formatFeedStatus(value: Date | null, error: string | null) {
+  if (error && !value) return "price feed loading";
+  if (!value) return "fetching live feed";
+  return "live DexScreener price";
+}
+
+/* ------------------------------------------------------------------------- *
+ * Helpers for the predict panel
+ * ------------------------------------------------------------------------- */
+
+const SCHEDULE_LABEL: Record<ScheduleType, string> = {
+  "15m": "15 Minute",
+  hourly: "Hourly",
+  daily: "Daily · 7PM ET",
+};
+
+/** Build the "1.8M $TROLL" / "7.4K $TROLL" / "421 $TROLL" volume label. */
+function formatVolumeTroll(volume: number): string {
+  if (!Number.isFinite(volume) || volume <= 0) return "0 $TROLL";
+  if (volume >= 1_000_000) return `${(volume / 1_000_000).toFixed(1)}M $TROLL`;
+  if (volume >= 1_000) return `${(volume / 1_000).toFixed(1)}K $TROLL`;
+  return `${Math.round(volume)} $TROLL`;
+}
+
+/** Whole-cent display, floored, kept in [1, 99] to match server clamping. */
+function fmtCents(c: number | undefined | null): string {
+  if (c == null || !Number.isFinite(c)) return "—";
+  const clamped = Math.max(1, Math.min(99, c));
+  return `${clamped.toFixed(0)}¢`;
+}
+
+/**
+ * Always exactly three slots in the predict panel: one per schedule_type.
+ *
+ *   slots[0] = 15-minute   (active market, or null if none)
+ *   slots[1] = hourly      (active market, or null if none)
+ *   slots[2] = daily       (active market, or null if none)
+ *
+ * "Active" = status ∈ {open, locked}.  We do NOT show settled or voided
+ * markets in the predict panel; once a market settles, the seeder creates
+ * its replacement and the next /api/markets poll surfaces the new row.
+ *
+ * The brief "settling" window (between close and replacement) shows up as a
+ * null slot, which the UI renders as "Creating new <type> market…".
+ */
+const PANEL_SLOTS: ScheduleType[] = ["15m", "hourly", "daily"];
+
+function buildPanelSlots(all: MarketSummary[]): Array<{
+  scheduleType: ScheduleType;
+  market: MarketSummary | null;
+  status: "active" | "settling" | "missing";
+}> {
+  return PANEL_SLOTS.map((sched) => {
+    const sameSched = all.filter((m) => m.scheduleType === sched);
+    // Pick the active one (open|locked), earliest-closing first.
+    const active = sameSched
+      .filter((m) => m.status === "open" || m.status === "locked")
+      .sort((a, b) => new Date(a.closeAt).getTime() - new Date(b.closeAt).getTime())[0];
+    if (active) {
+      return { scheduleType: sched, market: active, status: "active" as const };
+    }
+    // None active — is one currently settling?  Show that briefly.
+    const settling = sameSched.find((m) => m.status === "settling");
+    if (settling) {
+      return { scheduleType: sched, market: settling, status: "settling" as const };
+    }
+    return { scheduleType: sched, market: null, status: "missing" as const };
+  });
+}
+
+/* ========================================================================= *
+ * Routes
+ * ========================================================================= */
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<ClassicHome />} />
+      <Route path="/troll" element={<TrollPage />} />
+      <Route path="/market/:marketId" element={<MarketPage />} />
+      <Route path="/audit/:marketId" element={<AuditPage />} />
+      <Route path="/admin" element={<AdminPage />} />
+      <Route path="/claims" element={<ClaimsPage />} />
+      <Route path="*" element={<ClassicHome />} />
+    </Routes>
+  );
+}
+
+/* ========================================================================= *
+ * Brand — visual identity, do not redesign.
+ * ========================================================================= */
+
+function Brand() {
+  return (
+    <Link className="classic-brand" to="/" aria-label="pre-RICHARD-tion.fun home">
+      <span className="brand-pre">pre-</span>
+      <span className="brand-richard">
+        RICHARD
+        <span className="brand-strike" />
+        <span className="brand-dic" aria-hidden="true">
+          <span className="brand-dic-letter brand-dic-letter-d">D</span>
+          <span className="brand-dic-letter brand-dic-letter-i">I</span>
+          <span className="brand-dic-letter brand-dic-letter-c">C</span>
+        </span>
+      </span>
+      <span className="brand-tail">-tion.fun</span>
+    </Link>
+  );
+}
+
+/* ========================================================================= *
+ * ClassicHome — the landing page.  Visual layout is preserved exactly:
+ *   - same nav, brand, wallet button
+ *   - same hero copy card and CTA buttons
+ *   - same MC float card (live $TROLL price, untouched)
+ *   - same YES/NO/predict card layout, same class names
+ *   - same Coin of the Day section with the DexScreener iframe
+ *
+ * What changed:
+ *   - The hardcoded `markets` array is gone.
+ *   - The predict card pulls real markets from /api/markets, and:
+ *       · option buttons render real (id, schedule, lockAt, prices, volume)
+ *       · YES/NO floating cards reflect the SELECTED real market's prices
+ *       · the timer pill counts down to the SELECTED market's lockAt
+ *       · the question heading shows the selected market's real target_mc
+ *       · the YES/NO side toggle drives an auto-debounced /quote call
+ *       · the amount input + MAX uses the real wallet $TROLL balance
+ *       · the sign button runs the real escrow flow:
+ *           1. POST /api/markets/:id/quote
+ *           2. Phantom signs an SPL transferChecked
+ *           3. broadcast + confirm
+ *           4. POST /api/markets/:id/enter — server verifies on-chain, books
+ *              the position only after the deposit is verified.
+ *         No more "navigate(/admin)" stub.
+ * ========================================================================= */
+
+type Phase =
+  | { kind: "idle" }
+  | { kind: "quoting" }
+  | { kind: "ready"; quote: TradeQuote }
+  | { kind: "signing" }
+  | { kind: "broadcasting" }
+  | { kind: "verifying" }
+  | { kind: "ok"; positionId: string }
+  | { kind: "error"; message: string };
+
+function ClassicHome() {
+  const navigate = useNavigate();
+  const ticker = useTrollTicker();
+  const liveClock = useLiveClock();
+  const chartUrl = useMemo(getDexScreenerEmbedUrl, []);
+
+  // Real backend markets.  Polled every 5 s by useServerMarkets.
+  const { markets: allMarkets, escrowAccount, error: marketsError } = useServerMarkets();
+  // Always exactly 3 slots — one per schedule_type — possibly null/settling.
+  const slots = useMemo(() => buildPanelSlots(allMarkets), [allMarkets]);
+  // Convenience: tradable (status=active) market list, in slot order.
+  const activeMarkets = useMemo(
+    () => slots.filter((s) => s.status === "active" && s.market != null).map((s) => s.market!),
+    [slots],
+  );
+
+  // Wallet, balance, and SPL connection.
+  const wallet = useWallet();
+  const { connection } = useConnection();
+  const { setVisible: openWalletModal } = useWalletModal();
+  const balance = useTrollBalance();
+  const walletAddr = wallet.publicKey?.toBase58() ?? null;
+
+  // Wallet pending withdrawals — drives the conditional "Payouts (N)" nav pill.
+  // Polls every 8 s; quietly returns [] when wallet isn't connected.
+  const { withdrawals: walletWithdrawals } = useUserWithdrawals(walletAddr);
+  const pendingClaimCount = useMemo(
+    () => walletWithdrawals.filter((w) => w.status === "pending" || w.status === "sent").length,
+    [walletWithdrawals],
+  );
+
+  // ---------------- DEV LOGS for the user entry flow ---------------------
+  // Mirrors the [entry]/[verify]/[settle]/[payout]/[claim] log conventions
+  // on the server.  Use the browser console (or Vercel function logs) to
+  // walk the chain end-to-end during testing.
+  useEffect(() => {
+    if (wallet.connecting) console.info("[entry/wallet] connecting…");
+    if (wallet.disconnecting) console.info("[entry/wallet] disconnecting…");
+  }, [wallet.connecting, wallet.disconnecting]);
+  useEffect(() => {
+    if (wallet.connected && walletAddr) {
+      console.info(`[entry/wallet] CONNECTED wallet=${walletAddr}`);
+    } else if (!wallet.connected) {
+      console.info("[entry/wallet] disconnected");
+    }
+  }, [wallet.connected, walletAddr]);
+  useEffect(() => {
+    if (!walletAddr) return;
+    if (balance.loading) console.info(`[entry/balance] loading wallet=${walletAddr}`);
+    if (balance.error) console.warn(`[entry/balance] error wallet=${walletAddr} reason=${balance.error}`);
+    if (balance.balance != null) {
+      console.info(
+        `[entry/balance] OK wallet=${walletAddr} balance=${balance.balance} $TROLL`,
+      );
+    }
+  }, [walletAddr, balance.loading, balance.error, balance.balance]);
+
+  // Predict-panel selection.  Defaults to the first active market;
+  // automatically migrates if that market disappears or closes.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeMarkets.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+    if (!selectedId || !activeMarkets.some((m) => m.id === selectedId)) {
+      setSelectedId(activeMarkets[0]!.id);
+    }
+  }, [activeMarkets, selectedId]);
+  const selected = activeMarkets.find((m) => m.id === selectedId) ?? null;
+
+  const [side, setSide] = useState<Side>("YES");
+  const [amountStr, setAmountStr] = useState("");
+  const amount = useMemo(() => {
+    const n = parseFloat(amountStr);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [amountStr]);
+
+  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+
+  const tradable = !!selected && selected.status === "open" && new Date(selected.lockAt) > new Date();
+
+  // Auto-quote whenever (selected, side, amount) settle.
+  useEffect(() => {
+    if (!selected || !tradable || amount <= 0) {
+      setPhase({ kind: "idle" });
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setPhase({ kind: "quoting" });
+      console.info(
+        `[entry/quote] requesting market=${selected.id} side=${side} amount=${amount}`,
+      );
+      try {
+        const { quote } = await api.quote(selected.id, side, amount);
+        if (!cancelled) {
+          console.info(
+            `[entry/quote] response market=${selected.id} side=${side} ` +
+              `shares=${quote.shares.toFixed(2)} avg=${quote.avgPriceCents.toFixed(1)}c ` +
+              `priceBefore=${quote.marketPriceBeforeCents.toFixed(1)}c ` +
+              `priceAfter=${quote.marketPriceAfterCents.toFixed(1)}c`,
+          );
+          setPhase({ kind: "ready", quote });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : "Quote failed";
+          console.warn(`[entry/quote] error market=${selected.id} reason=${msg}`);
+          setPhase({ kind: "error", message: msg });
+        }
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [selected, side, amount, tradable]);
+
+  // Countdown for the timer pill is bound to the selected market.
+  const headlineCountdown = useShortCountdown(selected ? new Date(selected.lockAt) : null);
+
+  const onMax = () => {
+    if (balance.balance != null && balance.balance > 0) {
+      const v = Math.floor(balance.balance);
+      console.info(`[entry/max] click balance=${balance.balance} fillingTo=${v}`);
+      setAmountStr(v.toString());
+    } else {
+      console.info("[entry/max] click skipped — no balance");
+    }
+  };
+
+  const onSign = async () => {
+    if (!selected) {
+      setPhase({ kind: "error", message: "No market available right now." });
+      return;
+    }
+    if (!wallet.connected || !wallet.publicKey) {
+      // Open the wallet modal instead of erroring — this is the most common
+      // path for a brand-new visitor on the landing page.
+      openWalletModal(true);
+      return;
+    }
+    if (!escrowAccount) {
+      setPhase({ kind: "error", message: "Server hasn't reported an escrow account yet." });
+      return;
+    }
+    if (!tradable) {
+      setPhase({ kind: "error", message: "Market is locked." });
+      return;
+    }
+    if (amount <= 0) {
+      setPhase({ kind: "error", message: "Enter a $TROLL amount." });
+      return;
+    }
+    if (balance.balance != null && amount > balance.balance) {
+      setPhase({
+        kind: "error",
+        message: `You only have ${formatTrollBalance(balance.balance)} $TROLL.`,
+      });
+      return;
+    }
+
+    const mintStr = import.meta.env.VITE_TROLL_MINT?.trim();
+    if (!mintStr) {
+      setPhase({ kind: "error", message: "VITE_TROLL_MINT is not configured." });
+      return;
+    }
+
+    try {
+      console.info(
+        `[entry/sign] BEGIN market=${selected.id} side=${side} amount=${amount} ` +
+          `wallet=${wallet.publicKey.toBase58()}`,
+      );
+
+      // 1) Get a fresh quote (best price right before signing).
+      setPhase({ kind: "quoting" });
+      console.info(`[entry/sign] step1-quote market=${selected.id}`);
+      const { quote } = await api.quote(selected.id, side, amount);
+      console.info(
+        `[entry/sign] quote-ok shares=${quote.shares.toFixed(2)} avg=${quote.avgPriceCents.toFixed(1)}c`,
+      );
+      void quote;
+
+      // 2) Build + sign + broadcast the SPL transfer.
+      setPhase({ kind: "signing" });
+      const trollMint = new PublicKey(mintStr);
+      const escrowAta = new PublicKey(escrowAccount);
+      console.info(`[entry/sign] step2-build trollMint=${mintStr} escrowAta=${escrowAccount}`);
+      const decimals = await getTrollDecimals(connection, trollMint);
+      console.info(`[entry/sign] decimals=${decimals}`);
+
+      setPhase({ kind: "broadcasting" });
+      console.info("[entry/sign] step3-phantom-sign-and-broadcast");
+      const signature = await depositToEscrow({
+        wallet,
+        connection,
+        trollMint,
+        escrowTokenAccount: escrowAta,
+        amountUi: amount,
+        decimals,
+      });
+      const shortSig = `${signature.slice(0, 8)}…${signature.slice(-6)}`;
+      console.info(`[entry/sign] broadcast-ok sig=${shortSig}`);
+
+      // 3) Server verifies on-chain THEN books the position.
+      setPhase({ kind: "verifying" });
+      console.info(`[entry/sign] step4-server-verify sig=${shortSig}`);
+      const result = await api.enter(selected.id, {
+        wallet: wallet.publicKey.toBase58(),
+        side,
+        amountTroll: amount,
+        signature,
+      });
+      console.info(
+        `[entry/sign] DONE positionId=${result.positionId} tradeId=${result.tradeId} sig=${shortSig}`,
+      );
+
+      setPhase({ kind: "ok", positionId: result.positionId });
+      setAmountStr("");
+      // Brief pause so the user sees the success state, then route them
+      // to their position page.
+      window.setTimeout(() => navigate(`/market/${selected.id}`), 1500);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Sign-in failed";
+      console.warn(`[entry/sign] error market=${selected.id} reason=${msg}`);
+      setPhase({ kind: "error", message: msg });
+    }
+  };
+
+  // Sign-button label tracks phase.
+  const signButtonLabel = (() => {
+    if (!wallet.connected) return "Connect wallet to predict";
+    if (!selected) return marketsError ? "Markets unavailable" : "Loading markets…";
+    if (!tradable) return "Market locked";
+    switch (phase.kind) {
+      case "quoting":
+        return "Quoting…";
+      case "signing":
+        return "Sign in Phantom…";
+      case "broadcasting":
+        return "Broadcasting…";
+      case "verifying":
+        return "Verifying on-chain…";
+      case "ok":
+        return "Confirmed ✓";
+      case "error":
+        return "Try again";
+      default:
+        return "Sign $TROLL entry";
+    }
+  })();
+
+  const signDisabled =
+    !selected ||
+    !tradable ||
+    phase.kind === "quoting" ||
+    phase.kind === "signing" ||
+    phase.kind === "broadcasting" ||
+    phase.kind === "verifying" ||
+    phase.kind === "ok" ||
+    (wallet.connected && amount <= 0);
+
+  // YES/NO floating-card prices reflect the selected real market.
+  const yesCents = selected?.yesPriceCents;
+  const noCents = selected?.noPriceCents;
+
+  return (
+    <main className="classic-page">
+      <video className="classic-bg" src="/background.mp4" autoPlay muted loop playsInline />
+      <div className="classic-wash" />
+      <div className="classic-frame">
+        <nav className="classic-nav">
+          <Brand />
+          <div className="classic-actions">
+            <button className="classic-nav-pill" onClick={() => document.getElementById("coin-of-day")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+              Coin of the Day
+            </button>
+            <button className="classic-nav-pill" onClick={() => document.getElementById("predict-panel")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+              Predict
+            </button>
+            {wallet.connected && (
+              <button
+                className="classic-nav-pill"
+                onClick={() => navigate("/claims")}
+                title="View pending and confirmed payouts"
+              >
+                Payouts{pendingClaimCount > 0 ? ` (${pendingClaimCount})` : ""}
+              </button>
+            )}
+            <WalletConnectButton />
+          </div>
+        </nav>
+
+        <section className="classic-hero">
+          <div className="classic-copy-card">
+            <p className="classic-eyebrow">$TROLL holder market</p>
+            <h1>Prediction markets for $TROLL holders.</h1>
+            <p className="classic-subcopy">
+              Connect your wallet, show your $TROLL balance, pick YES or NO, and sign your $TROLL entry. Markets are real, escrowed on-chain, and settled by oracle median.
+            </p>
+            <div className="classic-cta-row">
+              <button className="classic-primary" onClick={() => document.getElementById("predict-panel")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+                Predict $TROLL
+              </button>
+              <button className="classic-secondary" onClick={() => document.getElementById("coin-of-day")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+                View chart
+              </button>
+            </div>
+          </div>
+
+          {/* Live MC card — UNCHANGED from prior version. */}
+          <div className={`classic-float-card mc-card ${ticker.error ? "is-stale" : "is-live"}`}>
+            <small>Live $TROLL MC</small>
+            <strong>{formatMarketCap(ticker.marketCapUsd)}</strong>
+            <span>{formatUsdPrice(ticker.priceUsd)} · true pair price</span>
+            <em>{formatFeedStatus(ticker.updatedAt, ticker.error)}</em>
+            <i className="live-clock">CLOCK {formatLiveClock(liveClock)}</i>
+          </div>
+
+          {/* YES / NO float cards — same DOM, same classes, but values now
+              come from the selected real market (or "—" before markets load). */}
+          <div className="classic-float-card yes-float">
+            <small>YES / OVER</small>
+            <strong>{fmtCents(yesCents)}</strong>
+            <span>{selected ? SCHEDULE_LABEL[selected.scheduleType] : "Live market"}</span>
+          </div>
+          <div className="classic-float-card no-float">
+            <small>NO / UNDER</small>
+            <strong>{fmtCents(noCents)}</strong>
+            <span>moves against YES</span>
+          </div>
+
+          {/* Predict card — same classes, same layout.  Real backend data. */}
+          <aside className="classic-predict-card" id="predict-panel">
+            <div className="predict-head">
+              <div>
+                <p className="classic-eyebrow">Predict</p>
+                <h2>{selected ? selected.question : "Loading market…"}</h2>
+              </div>
+              <span className="timer-pill">{selected ? headlineCountdown : "—"}</span>
+            </div>
+
+            <div className="market-options">
+              {slots.map((slot) => {
+                if (slot.status === "active" && slot.market) {
+                  const m = slot.market;
+                  return (
+                    <MarketOptionButton
+                      key={`${slot.scheduleType}:${m.id}`}
+                      market={m}
+                      active={m.id === selectedId}
+                      onClick={() => {
+                        setSelectedId(m.id);
+                        setPhase({ kind: "idle" });
+                      }}
+                    />
+                  );
+                }
+                // Either settling, or the rare race where active was set but the
+                // market disappeared between buildPanelSlots and render — in either
+                // case render the placeholder.
+                const placeholderState: "settling" | "missing" =
+                  slot.status === "settling" ? "settling" : "missing";
+                return (
+                  <PlaceholderSlot
+                    key={`${slot.scheduleType}:placeholder`}
+                    scheduleType={slot.scheduleType}
+                    state={placeholderState}
+                    error={marketsError}
+                  />
+                );
+              })}
+            </div>
+
+            <div className="side-row">
+              <button
+                className="yes-side"
+                type="button"
+                onClick={() => setSide("YES")}
+                style={side === "YES" ? undefined : { opacity: 0.55 }}
+                aria-pressed={side === "YES"}
+              >
+                YES {fmtCents(yesCents)}
+              </button>
+              <button
+                className="no-side"
+                type="button"
+                onClick={() => setSide("NO")}
+                style={side === "NO" ? undefined : { opacity: 0.55 }}
+                aria-pressed={side === "NO"}
+              >
+                NO {fmtCents(noCents)}
+              </button>
+            </div>
+
+            <label className="amount-label" htmlFor="amount">
+              How many $TROLL do you want to put up?
+            </label>
+            <div className="amount-row">
+              <input
+                id="amount"
+                inputMode="decimal"
+                placeholder="0"
+                value={amountStr}
+                onChange={(e) => setAmountStr(e.target.value)}
+                disabled={!tradable}
+              />
+              <button type="button" onClick={onMax} disabled={!balance.balance}>
+                MAX
+              </button>
+            </div>
+
+            <div className="quote-box">
+              <span>
+                Price <b>{fmtCents(side === "YES" ? yesCents : noCents)}</b>
+              </span>
+              <span>
+                Estimated contracts{" "}
+                <b>
+                  {phase.kind === "ready"
+                    ? phase.quote.shares.toLocaleString(undefined, { maximumFractionDigits: 0 })
+                    : "--"}
+                </b>
+              </span>
+              <span>
+                Wallet balance{" "}
+                <b>{balance.balance != null ? formatTrollBalance(balance.balance) : "--"}</b>
+              </span>
+              {phase.kind === "error" && (
+                <span style={{ color: "#9c1232" }}>
+                  Error <b>{phase.message}</b>
+                </span>
+              )}
+              {phase.kind === "ok" && (
+                <span style={{ color: "#006c3b" }}>
+                  Status <b>position recorded · routing…</b>
+                </span>
+              )}
+            </div>
+
+            <button className="sign-button" type="button" onClick={onSign} disabled={signDisabled}>
+              {signButtonLabel}
+            </button>
+          </aside>
+        </section>
+
+        {/* Coin of the Day chart — UNCHANGED. Same DexScreener iframe URL. */}
+        <section className="coin-day-section" id="coin-of-day" aria-label="Coin of the Day live chart">
+          <div className="coin-day-copy">
+            <p className="classic-eyebrow">Coin of the Day</p>
+            <h2>$TROLL live chart</h2>
+            <p>Embedded on the landing page. The black MC card uses the same pair source and refreshes every 2 seconds.</p>
+          </div>
+          <div className="coin-day-chart">
+            <iframe title="$TROLL DexScreener live chart" src={chartUrl} allow="clipboard-write" />
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+/* ------------------------------------------------------------------------- *
+ * Single market option button.  Pure presentational, but wired so the
+ * countdown ticks per-second per market.
+ *
+ * Same .market-option class structure as the prior static version:
+ *
+ *   <button class="market-option [active]">
+ *     <span><b>{label}</b><em>{time}</em></span>
+ *     <small>{question}</small>
+ *     <span class="price-row"><b class="yes">YES Xc</b><b class="no">NO Yc</b></span>
+ *     <small>Volume {fmt}</small>
+ *   </button>
+ * ------------------------------------------------------------------------- */
+function MarketOptionButton({
+  market,
+  active,
+  onClick,
+}: {
+  market: MarketSummary;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const time = useShortCountdown(new Date(market.lockAt));
+  return (
+    <button
+      type="button"
+      className={`market-option ${active ? "active" : ""}`}
+      onClick={onClick}
+    >
+      <span>
+        <b>{SCHEDULE_LABEL[market.scheduleType]}</b>
+        <em>{time}</em>
+      </span>
+      <small>{market.question}</small>
+      <span className="price-row">
+        <b className="yes">YES {fmtCents(market.yesPriceCents)}</b>
+        <b className="no">NO {fmtCents(market.noPriceCents)}</b>
+      </span>
+      <small>Volume {formatVolumeTroll(market.volume)}</small>
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------------------- *
+ * Placeholder slot.  Renders in the predict panel when one of the three
+ * schedules has no active market — most commonly during the brief window
+ * between a market settling and the seeder creating its replacement.
+ *
+ * Same .market-option DOM/classes as the real buttons so the surrounding
+ * 3-column grid layout is preserved.  Disabled and not-clickable.
+ * ------------------------------------------------------------------------- */
+function PlaceholderSlot({
+  scheduleType,
+  state,
+  error,
+}: {
+  scheduleType: ScheduleType;
+  state: "settling" | "missing";
+  error: string | null;
+}) {
+  const label = SCHEDULE_LABEL[scheduleType];
+  const headline =
+    state === "settling" ? "Settling…" : error ? "No active market" : "Creating market…";
+  const detail =
+    state === "settling"
+      ? "Window closed. Next market opens shortly."
+      : error
+        ? `Server error: ${error}`
+        : `No active ${label.toLowerCase()} market right now. The seeder runs every cycle.`;
+  return (
+    <button
+      type="button"
+      className="market-option"
+      disabled
+      style={{ cursor: "default", opacity: 0.65 }}
+    >
+      <span>
+        <b>{label}</b>
+        <em>{headline}</em>
+      </span>
+      <small>{detail}</small>
+      <span className="price-row">
+        <b className="yes">YES —</b>
+        <b className="no">NO —</b>
+      </span>
+      <small>Volume —</small>
+    </button>
+  );
+}
