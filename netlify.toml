@@ -1,0 +1,35 @@
+# Netlify configuration for the prerichardtion.fun frontend.
+#
+# Frontend env vars (VITE_TROLL_MINT, VITE_HELIUS_RPC_URL, VITE_API_BASE_URL,
+# VITE_DEXSCREENER_PAIR_URL, VITE_GECKOTERMINAL_POOL_URL) are set in the
+# Netlify dashboard under:
+#     Site settings → Environment variables
+# They are NOT listed here because (a) some change between branch deploys
+# and (b) we don't want secrets in git.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA fallback: every URL that doesn't match a real file should serve
+# index.html so React Router can take over.  Without this, hitting
+# /claims or /admin via hard-reload (or sharing a deep link) returns 404.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Long-cache the hashed asset bundles.  index.html stays no-cache so the new
+# bundle is picked up on the next visit.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
