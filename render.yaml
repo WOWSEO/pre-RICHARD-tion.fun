@@ -1,125 +1,36 @@
-# Render Blueprint — paste-and-deploy.
+# Render Blueprint (SAFE / web service only)
 #
-# Usage:
-#   1. Push this file (and the rest of the patch) to your repo.
-#   2. https://dashboard.render.com → New → Blueprint → connect this repo.
-#   3. Render reads this file, creates the web service + 3 crons.
-#   4. Fill in the `sync: false` secrets in each service's env editor:
-#         ADMIN_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
-#         HELIUS_RPC_URL, TROLL_MINT, ESCROW_AUTHORITY_SECRET
-#      (The web service and all crons need the same set.)
-#   5. Once green, copy the web service's onrender.com URL into Netlify's
-#      VITE_API_BASE_URL env var and trigger a redeploy of the frontend.
+# This file intentionally creates ONLY the API web service.
+# Do NOT use the older multi-cron Blueprint unless you want extra paid services.
 #
-# Plan choices:
-#   - `starter` for the API (always-on, $7/mo as of 2026).  `free` puts the
-#     service to sleep after 15min of inactivity, which adds 30+s cold-start
-#     latency on the user's first market load.
-#   - Cron jobs run on their own ephemeral instance and only bill per-tick.
+# Current recommended setup:
+#   1. Keep your existing Render Web Service for the API.
+#   2. Add the env vars below in the Render dashboard.
+#   3. Use ONE market tick cron externally or as a single Render Cron Job:
+#        POST https://pre-richard-tion-api.onrender.com/api/admin/tick-markets
+#        Header: x-admin-api-key: <ADMIN_API_KEY>
+#      every 1 minute.
+#
+# The API must stay on Node 24 because the Supabase realtime dependency path
+# needs native WebSocket support.
 
 services:
-  # ---------------------------------------------------------------- API ---
   - type: web
-    name: prerichardtion-api
+    name: pre-richard-tion-api
     runtime: node
-    plan: starter
-    buildCommand: npm install
+    plan: free
+    buildCommand: npm install --include=dev --legacy-peer-deps --ignore-scripts && npm run build:server
     startCommand: npm run server
     healthCheckPath: /healthz
     envVars:
-      # Render injects PORT automatically — server/env.ts picks it up.
       - key: NODE_VERSION
         value: "24.14.1"
       - key: NODE_ENV
         value: production
-      # CORS_ORIGINS — comma-separated, no trailing slashes.  The server reads
-      # this first; if absent it falls through to the legacy CLIENT_ORIGIN
-      # alias, then to NODE_ENV-aware defaults.
       - key: CORS_ORIGINS
         value: https://pre-richard-tion.fun,https://www.pre-richard-tion.fun,http://localhost:5173,http://localhost:5174
       - key: DEPOSIT_CONFIRMATION
         value: confirmed
-      # Secrets — set in the Render dashboard.
-      - key: ADMIN_API_KEY
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: HELIUS_RPC_URL
-        sync: false
-      - key: TROLL_MINT
-        sync: false
-      - key: ESCROW_AUTHORITY_SECRET
-        sync: false
-
-  # --------------------------------------------------- CRON: seed markets -
-  # Ensures the 3 lifecycle slots (15m / hourly / daily) always have an
-  # active market.  Settlement orchestrator hands off to the seeder
-  # immediately after settling, so this cron is just a safety net.
-  - type: cron
-    name: prerichardtion-seed
-    runtime: node
-    plan: starter
-    schedule: "* * * * *"   # every minute
-    buildCommand: npm install
-    startCommand: npm run seed:markets
-    envVars:
-      - key: NODE_VERSION
-        value: "24.14.1"
-      - key: ADMIN_API_KEY
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: HELIUS_RPC_URL
-        sync: false
-      - key: TROLL_MINT
-        sync: false
-      - key: ESCROW_AUTHORITY_SECRET
-        sync: false
-
-  # ------------------------------------------------------- CRON: settle -
-  # Finds markets whose close window has fully elapsed and runs the
-  # settlement engine on them.
-  - type: cron
-    name: prerichardtion-settle
-    runtime: node
-    plan: starter
-    schedule: "* * * * *"   # every minute
-    buildCommand: npm install
-    startCommand: npm run settle
-    envVars:
-      - key: NODE_VERSION
-        value: "24.14.1"
-      - key: ADMIN_API_KEY
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: HELIUS_RPC_URL
-        sync: false
-      - key: TROLL_MINT
-        sync: false
-      - key: ESCROW_AUTHORITY_SECRET
-        sync: false
-
-  # ------------------------------------------------- CRON: run payouts -
-  # Sweeps pending escrow_withdrawals and broadcasts the SPL transfers.
-  # Users can also self-claim from /claims; this cron is for parallel
-  # automation.
-  - type: cron
-    name: prerichardtion-payouts
-    runtime: node
-    plan: starter
-    schedule: "*/2 * * * *"   # every 2 minutes
-    buildCommand: npm install
-    startCommand: npm run payouts:run
-    envVars:
-      - key: NODE_VERSION
-        value: "24.14.1"
       - key: ADMIN_API_KEY
         sync: false
       - key: SUPABASE_URL

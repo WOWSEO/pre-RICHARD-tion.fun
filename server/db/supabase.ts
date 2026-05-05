@@ -40,6 +40,16 @@ export interface MarketRow {
   created_by: string | null;
   settled_at: string | null;
   version: number;
+  // Higher/lower lifecycle columns (added by 001_market_lifecycle migration).
+  // Nullable to keep the type compatible with rows from pre-migration installs;
+  // populated unconditionally by the v7+ seeder and settlement orchestrator.
+  open_price_usd: string | null;
+  open_mc: string | null;
+  open_snapshot_at: string | null;
+  settlement_price_usd: string | null;
+  settlement_snapshot_at: string | null;
+  settlement_result: "YES" | "NO" | "VOID" | null;
+  market_kind: string | null;
 }
 
 export interface TradeRow {

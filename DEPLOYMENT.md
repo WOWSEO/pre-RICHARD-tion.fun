@@ -50,62 +50,56 @@ openssl rand -hex 32
 
 ---
 
-## 1. Deploy the API to Render — Blueprint method (recommended)
+## 1. Deploy the API to Render — current recommended method
 
-The repo includes `render.yaml`, which provisions one web service plus
-three cron workers (seed, settle, payouts) in one click.
+You already have the clean setup: one Render **Web Service** for the API. Keep using the manual Web Service rather than creating a new Blueprint from scratch.
 
-1. Push the repo to GitHub.
-2. https://dashboard.render.com → **New** → **Blueprint** → connect the repo.
-3. Render reads `render.yaml`, creates four services. Click into each one
-   and fill in the **Environment** tab:
+Render settings:
 
-   | Var                          | Value                                                |
-   |------------------------------|------------------------------------------------------|
-   | `ADMIN_API_KEY`              | the openssl-generated string                         |
-   | `SUPABASE_URL`               | from Supabase                                        |
-   | `SUPABASE_SERVICE_ROLE_KEY`  | from Supabase                                        |
-   | `HELIUS_RPC_URL`             | `https://mainnet.helius-rpc.com/?api-key=…`          |
-   | `TROLL_MINT`                 | mainnet $TROLL mint address                          |
-   | `ESCROW_AUTHORITY_SECRET`    | base58 string from §0                                |
-
-   `CORS_ORIGINS` and `DEPOSIT_CONFIRMATION` already have safe defaults
-   in `render.yaml` — leave them.
-
-4. The four services will start. The web service exposes a URL like
-   `https://prerichardtion-api.onrender.com`. Verify:
-
-   ```bash
-   curl https://prerichardtion-api.onrender.com/healthz
-   # → {"ok":true,"time":"2026-…"}
-   ```
-
-5. Note the URL — you'll paste it into Netlify in §3.
-
----
-
-## 1-alt. Deploy the API to Render — manual method
-
-If you don't want to use the Blueprint:
-
-- **New** → **Web Service** → connect repo
 - **Runtime**: Node
-- **Build Command**: `npm install`
-- **Start Command**: `npm run server`
-- **Health Check Path**: `/healthz`
-- **Environment**: same six secrets as above, plus
-  `CORS_ORIGINS=https://pre-richard-tion.fun,https://www.pre-richard-tion.fun`
+- **Plan**: Free is okay for testing; it may sleep. Upgrade later only if cold starts become a problem.
+- **Build Command**:
 
-Then add three **Cron Jobs** (separate Render service type, free):
+```bash
+npm install --include=dev --legacy-peer-deps --ignore-scripts && npm run build:server
+```
 
-- `npm run seed:markets` — every minute
-- `npm run settle` — every minute
-- `npm run payouts:run` — every 2 minutes
+- **Start Command**:
 
-All four services need the same six secrets. Render's "Environment Groups"
-can DRY this up: create one group with the six secrets, attach to all four.
+```bash
+npm run server
+```
 
----
+- **Health Check Path**:
+
+```bash
+/healthz
+```
+
+Environment variables on the Render Web Service:
+
+| Var                          | Value                                                |
+|------------------------------|------------------------------------------------------|
+| `NODE_VERSION`               | `24.14.1`                                            |
+| `NODE_ENV`                   | `production`                                         |
+| `CORS_ORIGINS`               | `https://pre-richard-tion.fun,https://www.pre-richard-tion.fun,http://localhost:5173,http://localhost:5174` |
+| `ADMIN_API_KEY`              | your admin secret                                    |
+| `SUPABASE_URL`               | from Supabase                                        |
+| `SUPABASE_SERVICE_ROLE_KEY`  | from Supabase                                        |
+| `HELIUS_RPC_URL`             | `https://mainnet.helius-rpc.com/?api-key=…`          |
+| `TROLL_MINT`                 | mainnet $TROLL mint address                          |
+| `ESCROW_AUTHORITY_SECRET`    | base58 escrow authority secret                       |
+| `DEPOSIT_CONFIRMATION`       | `confirmed`                                          |
+
+Verify:
+
+```bash
+curl https://pre-richard-tion-api.onrender.com/healthz
+curl https://pre-richard-tion-api.onrender.com/api/markets
+```
+
+Do **not** create the old seed/settle/payout crons. Use the single tick endpoint in section 4½.
+
 
 ## 2. Deploy the API to Railway
 
@@ -216,10 +210,102 @@ wallet side by sending the user's $TROLL to their own ATA first.
 
 ### Cron jobs aren't running
 
-Check the cron service logs in Render/Railway. The seeder writes
-`[seed] tick ...` every minute; the settler writes `[settle] BEGIN ...`
-when there's work to do. If those are silent for 5+ minutes, the cron
-service didn't start — check the env vars.
+Check the cron service logs in Render/Railway. The single tick job should call `POST /api/admin/tick-markets` every minute. If markets stop rolling forward, check the tick job logs and verify it sends the `x-admin-api-key` header.
+
+---
+
+## 4½. Production market automation (tick endpoint)
+
+The simplest way to keep the lifecycle moving in production is a single
+1-minute cron hitting `POST /api/admin/tick-markets`.  This endpoint:
+
+1. Settles every market past `close_at` (writes `settlement_mc`,
+   `settlement_snapshot_at`, `settlement_result`, `outcome`).
+2. Ensures exactly one active market per `schedule_type` (15m / hourly /
+   daily) — creates a fresh one with an `open_mc` snapshot if a slot is
+   empty.
+
+Returns a structured JSON summary:
+
+```json
+{
+  "settled":  [{ "marketId": "...", "outcome": "YES", "settlementMc": 42.5e6, "nextMarketId": "..." }],
+  "created":  [{ "marketId": "...", "scheduleType": "15m", "openMc": 42.7e6, "closeAt": "..." }],
+  "active":   [{ "scheduleType": "15m", "marketId": "...", "status": "open", "closeAt": "..." }, ...],
+  "skipped":  [],
+  "errors":   [],
+  "elapsedMs": 1234
+}
+```
+
+### Render Cron Job setup
+
+Create **one** cron job only. Do not create the older separate seed / settle / payout crons unless you specifically want those extra services.
+
+Schedule:
+
+```cron
+* * * * *
+```
+
+Command:
+
+```bash
+curl -fsS -X POST \
+  -H "x-admin-api-key: $TICK_ADMIN_KEY" \
+  -H "content-type: application/json" \
+  --max-time 50 \
+  "$TICK_URL/api/admin/tick-markets"
+```
+
+Cron env vars:
+
+| Var | Value |
+|-----|-------|
+| `TICK_URL` | `https://pre-richard-tion-api.onrender.com` with no trailing slash |
+| `TICK_ADMIN_KEY` | same value as `ADMIN_API_KEY` on the API service |
+
+Verify in the cron logs after the first tick — you should see the JSON response printed.
+
+### External cron alternative
+
+If you don't want to run the cron on Render (e.g., cost), any HTTP cron
+service works: `cron-job.org`, GitHub Actions, fly.io machines, k8s
+CronJob.  All they need to do is fire a POST every minute with the
+`x-admin-api-key` header set to your `ADMIN_API_KEY`.
+
+GitHub Actions example (`.github/workflows/tick.yml`):
+
+```yaml
+on:
+  schedule: [{ cron: "* * * * *" }]
+  workflow_dispatch:
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -fsS -X POST \
+            -H "x-admin-api-key: ${{ secrets.ADMIN_API_KEY }}" \
+            -H "content-type: application/json" \
+            --max-time 50 \
+            "${{ secrets.API_URL }}/api/admin/tick-markets"
+```
+
+### Local CLI alternative
+
+Run `npm run tick:markets` from the repo root.  Same logic as the HTTP
+endpoint — useful for manual fix-up, local dev, or running from a private
+cron host without exposing the admin endpoint to the internet.
+
+### Auth header
+
+The `requireAdmin` middleware accepts EITHER:
+- `x-admin-key` (legacy, used by the admin console UI)
+- `x-admin-api-key` (preferred for external automation)
+
+Both compare to the same `ADMIN_API_KEY` env var.  Use whichever your
+cron tooling makes easier.
 
 ---
 
@@ -240,6 +326,9 @@ curl $API/api/markets | jq '.markets | length'
 
 curl -X POST -H "x-admin-key: $ADMIN_API_KEY" $API/api/admin/seed-markets
 # → {"ok":true,"results":[...]}
+
+curl -X POST -H "x-admin-api-key: $ADMIN_API_KEY" $API/api/admin/tick-markets | jq
+# → { settled, created, active, skipped, errors, elapsedMs }
 ```
 
 When all four return clean responses you're production-ready.

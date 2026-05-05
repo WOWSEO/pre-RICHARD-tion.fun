@@ -5,13 +5,20 @@ import { settleMarketViaWorker } from "../services/settlementOrchestrator";
 import { runPendingWithdrawals } from "../services/payoutEngine";
 import { escrowTokenAccount } from "../services/escrowVerifier";
 import { ensureOneActivePerSchedule, seedSingle } from "../services/marketSeeder";
+import { tickMarkets } from "../services/tickService";
 import type { ScheduleType } from "../../src/market/marketTypes";
 
 export const adminRouter = Router();
 
-/* Admin gate. Compares header `x-admin-key` to env. Logs every call. */
+/* Admin gate. Accepts EITHER header:
+ *   - `x-admin-key`     (legacy, used by the admin console UI)
+ *   - `x-admin-api-key` (per the production cron-job spec — clearer name
+ *                        for external automation, e.g. Render Cron Job hitting
+ *                        the API via curl).
+ * Both compare to the same ADMIN_API_KEY env var.  Either works; the request
+ * is authenticated if either matches. */
 const requireAdmin: RequestHandler = (req, res, next) => {
-  const key = req.header("x-admin-key");
+  const key = req.header("x-admin-key") ?? req.header("x-admin-api-key");
   const envKey = loadEnv().ADMIN_API_KEY;
   if (!key || key !== envKey) {
     return res.status(401).json({ error: "unauthorized" });
@@ -108,6 +115,50 @@ adminRouter.post("/seed-markets", async (_req, res) => {
     const msg = (err as Error).message;
     await logAction(actor, "seed_markets", {}, "error", msg);
     res.status(500).json({ error: msg });
+  }
+});
+
+/* ========================================================================== */
+/* POST /api/admin/tick-markets                                               */
+/* Body: ignored.                                                             */
+/*                                                                            */
+/* Production market automation in a single call.  Settles every expired      */
+/* market and ensures exactly one active market per schedule_type.  Wired to  */
+/* a 1-minute cron (Render Cron Job, GitHub Actions, cron-job.org).           */
+/*                                                                            */
+/* Returns: { settled, created, active, skipped, errors, elapsedMs }.         */
+/*                                                                            */
+/* Auth: x-admin-key OR x-admin-api-key header (both accepted, see            */
+/* requireAdmin above).                                                       */
+/* ========================================================================== */
+adminRouter.post("/tick-markets", async (req, res) => {
+  const actor = req.header("x-admin-actor") ?? "cron";
+  try {
+    const result = await tickMarkets();
+    await logAction(
+      actor,
+      "tick_markets",
+      {
+        settledCount: result.settled.length,
+        createdCount: result.created.length,
+        skippedCount: result.skipped.length,
+        errorCount: result.errors.length,
+        elapsedMs: result.elapsedMs,
+        // Per-market error details captured in metadata so the response
+        // status can stay 200 (the tick still made forward progress).
+        perMarketErrors: result.errors,
+      },
+      "ok",
+      null,
+    );
+    // 200 even with per-market errors — the tick advances the lifecycle as
+    // far as it can each call.  A 5xx would mask the partial progress.
+    res.json(result);
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error(`[tick] FATAL ${msg}`);
+    await logAction(actor, "tick_markets", {}, "error", msg);
+    res.status(500).json({ error: "tick_failed", message: msg });
   }
 });
 
