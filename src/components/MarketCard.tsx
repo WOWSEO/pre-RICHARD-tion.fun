@@ -20,6 +20,9 @@ export function MarketCard({ market }: { market: MarketSummary }) {
   const { hh, mm, ss, expired } = useCountdown(closeAtDate);
   const status = market.status;
   const tradable = status === "open";
+  // req 3: open + zero activity → show "Waiting for first prediction"
+  // instead of bare "0 · 0" volume / OI numbers (which read as broken).
+  const awaitingFirstTrade = tradable && market.volume === 0 && market.openInterest === 0;
 
   const closeLabel = formatCloseLabel(closeAtDate);
   const targetMcLabel = formatMC(market.targetMc);
@@ -48,7 +51,7 @@ export function MarketCard({ market }: { market: MarketSummary }) {
         <PriceChip side="NO" cents={market.noPriceCents} />
       </div>
 
-      {/* footer: countdown + volume + OI */}
+      {/* footer: countdown + (volume/OI OR waiting-state) */}
       <div className="flex items-end justify-between border-t border-ink-200/10 pt-3 text-xs text-ink-100">
         <div>
           <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-100/60">
@@ -63,12 +66,25 @@ export function MarketCard({ market }: { market: MarketSummary }) {
           )}
         </div>
         <div className="text-right">
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-100/60">
-            Vol · OI
-          </p>
-          <p className="font-mono tabular-nums text-ink-200">
-            {market.volume.toFixed(0)} · {market.openInterest.toFixed(0)}
-          </p>
+          {awaitingFirstTrade ? (
+            <>
+              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-100/60">
+                Status
+              </p>
+              <p className="font-display text-sm font-semibold text-ink-200">
+                Waiting for first prediction
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-100/60">
+                Vol · OI
+              </p>
+              <p className="font-mono tabular-nums text-ink-200">
+                {market.volume.toFixed(0)} · {market.openInterest.toFixed(0)}
+              </p>
+            </>
+          )}
         </div>
       </div>
 

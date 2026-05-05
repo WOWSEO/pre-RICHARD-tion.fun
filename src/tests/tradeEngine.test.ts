@@ -202,10 +202,27 @@ describe("lock-time gating", () => {
     buyYes(alice, market, 100);
     const pos = market.positions[0]!;
     expect(pos.status).toBe("open");
-    // Force the clock past lockAt
-    tick(market, market.lockAt);
+    // v17 product rule: lock fires at closeAt (not lockAt).  Force the
+    // clock to closeAt and verify both the market and position flip.
+    tick(market, market.closeAt);
     expect(market.status).toBe("locked");
     expect(pos.status).toBe("locked");
+  });
+
+  it("v17: market is still tradable past lockAt but before closeAt", () => {
+    // Regression guard for the v17 product-rule change.  Markets must NOT
+    // lock until closeAt — the "lockAt = closeAt - window/2" buffer that
+    // older versions of the brain used to pre-emptively close trading is
+    // no longer a behavioral cutoff.  Users keep predicting until close.
+    const { alice, market } = setup();
+    const between = new Date(
+      (market.lockAt.getTime() + market.closeAt.getTime()) / 2,
+    );
+    expect(between.getTime()).toBeGreaterThan(market.lockAt.getTime());
+    expect(between.getTime()).toBeLessThan(market.closeAt.getTime());
+    tick(market, between);
+    expect(market.status).toBe("open");
+    expect(() => buyYes(alice, market, 25)).not.toThrow();
   });
 });
 

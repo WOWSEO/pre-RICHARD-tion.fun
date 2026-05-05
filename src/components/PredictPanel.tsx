@@ -44,18 +44,44 @@ export function PredictPanel({ market, escrowAccount, onTradeCommitted }: Props)
   const { connection } = useConnection();
   const balance = useTrollBalance();
   const navigate = useNavigate();
-  const { hh, mm, ss, expired } = useCountdown(new Date(market.lockAt));
+  // v17: countdown ticks toward closeAt (not lockAt).  Users keep predicting
+  // until the moment of close, so the on-screen timer tracks the same
+  // boundary the backend uses to gate entry.
+  const closeAtDate = useMemo(() => new Date(market.closeAt), [market.closeAt]);
+  const { hh, mm, ss, expired } = useCountdown(closeAtDate);
 
   const [side, setSide] = useState<Side>("YES");
   const [amountStr, setAmountStr] = useState("");
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  // Re-render every second so the under-60s "Closing soon" / past-closeAt
+  // "Closed" copy updates without waiting for a market poll.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const amount = useMemo(() => {
     const n = parseFloat(amountStr);
     return Number.isFinite(n) && n > 0 ? n : 0;
   }, [amountStr]);
 
-  const tradable = market.status === "open" && new Date(market.lockAt) > new Date();
+  // ---------- UI states ----------------------------------------------------
+  // v17 product rule: a market is enterable when status === "open" AND we
+  // are STRICTLY before closeAt.  `lockAt` is no longer a behavioral cutoff
+  // (kept on the wire only for backwards compat with older clients).
+  const tradable = market.status === "open" && closeAtDate.getTime() > nowMs;
+  // closingSoon — within the final 60s.  Header copy switches to "Closing
+  // soon" so users notice without us blocking entry.
+  const msUntilClose = closeAtDate.getTime() - nowMs;
+  const closingSoon = tradable && msUntilClose > 0 && msUntilClose < 60_000;
+  // awaitingFirstTrade — open + zero activity.  This is a normal state, not
+  // an error (the YES/NO prices defaulting to 50¢/50¢ is correct here).
+  const awaitingFirstTrade =
+    tradable && market.volume === 0 && market.openInterest === 0;
+  // noTroll — wallet connected, balance loaded, exactly zero.  Distinct from
+  // "balance still loading" (balance === null) so the prompt doesn't flash.
+  const noTroll = wallet.connected && balance.balance === 0;
 
   // Auto-fetch quote whenever (side, amount) settles
   useEffect(() => {
@@ -101,7 +127,7 @@ export function PredictPanel({ market, escrowAccount, onTradeCommitted }: Props)
     }
     if (phase.kind !== "ready") return;
     if (!tradable) {
-      setPhase({ kind: "error", message: "Market is locked." });
+      setPhase({ kind: "error", message: "Market is closed." });
       return;
     }
 
@@ -164,12 +190,18 @@ export function PredictPanel({ market, escrowAccount, onTradeCommitted }: Props)
             Take a position
           </p>
           <h3 className="mt-0.5 font-display text-lg font-bold text-ink-200 sm:text-xl">
-            {tradable ? "Open" : "Closed for trading"}
+            {!tradable
+              ? "Closed"
+              : closingSoon
+                ? "Closing soon"
+                : awaitingFirstTrade
+                  ? "Waiting for first prediction"
+                  : "Open"}
           </h3>
         </div>
         <div className="text-right">
           <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-100/70">
-            Locks in
+            Closes in
           </p>
           <p className="font-mono text-base font-semibold tabular-nums text-ink-200">
             {expired ? "—" : `${hh}:${mm}:${ss}`}
@@ -236,6 +268,19 @@ export function PredictPanel({ market, escrowAccount, onTradeCommitted }: Props)
       {/* Phase status messages */}
       <PhaseBadge phase={phase} />
 
+      {/* No-$TROLL prompt — req 7.  Shown only when wallet is connected AND
+          balance has loaded AND it's exactly zero.  Above the (mutually-
+          exclusive) insufficient block so the user sees the right copy
+          whether they have nothing or have less than they typed. */}
+      {noTroll && phase.kind !== "ok" && (
+        <div className="mt-3 rounded-lg bg-no/15 px-3 py-2 text-xs text-no-deep ring-1 ring-no/30">
+          <p className="font-semibold">No $TROLL detected</p>
+          <p className="mt-0.5 text-no-deep/85">
+            Add $TROLL to your wallet to make a prediction.
+          </p>
+        </div>
+      )}
+
       {insufficient && phase.kind !== "error" && (
         <p className="mt-3 rounded-lg bg-no/15 px-3 py-2 text-xs text-no-deep ring-1 ring-no/30">
           You only have {formatTrollBalance(balance.balance!)} $TROLL — top up your wallet to enter this size.
@@ -245,15 +290,21 @@ export function PredictPanel({ market, escrowAccount, onTradeCommitted }: Props)
       <button
         type="button"
         onClick={onConfirm}
-        disabled={!tradable || phase.kind !== "ready" || !wallet.connected || insufficient}
+        disabled={
+          !tradable ||
+          phase.kind !== "ready" ||
+          !wallet.connected ||
+          insufficient ||
+          noTroll
+        }
         className={`mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed ${
           side === "YES"
             ? "bg-yes text-ink-200 ring-1 ring-yes/40 hover:shadow-yes-glow"
             : "bg-no text-ink-200 ring-1 ring-no/40 hover:shadow-no-glow"
         }`}
       >
-        {confirmLabel(phase, side, tradable, wallet.connected)}
-        {phase.kind === "ready" && tradable && wallet.connected && <span aria-hidden>→</span>}
+        {confirmLabel(phase, side, tradable, wallet.connected, noTroll)}
+        {phase.kind === "ready" && tradable && wallet.connected && !noTroll && <span aria-hidden>→</span>}
       </button>
 
       <p className="mt-2.5 text-center text-[10px] leading-relaxed text-ink-100/60">
@@ -267,16 +318,27 @@ function isBusy(phase: Phase): boolean {
   return ["signing", "broadcasting", "verifying", "ok"].includes(phase.kind);
 }
 
-function confirmLabel(phase: Phase, side: Side, tradable: boolean, connected: boolean): string {
+function confirmLabel(
+  phase: Phase,
+  side: Side,
+  tradable: boolean,
+  connected: boolean,
+  noTroll: boolean,
+): string {
+  // req 7: disconnected → "Connect wallet to predict"
   if (!connected) return "Connect wallet to predict";
-  if (!tradable) return "Market locked";
+  // req 7: connected + zero balance → echo the message-block copy on the
+  // button so the disabled state is self-explanatory at a glance.
+  if (noTroll) return "No $TROLL detected";
+  // req 7 / req 1: not enterable → "Market closed" (never "locked").
+  if (!tradable) return "Market closed";
   switch (phase.kind) {
     case "idle":
       return "Enter an amount";
     case "quoting":
       return "Quoting…";
     case "ready":
-      return `Sign $TROLL entry (${side})`;
+      return `Predict ${side}`;
     case "signing":
       return "Awaiting Phantom…";
     case "broadcasting":
@@ -286,7 +348,7 @@ function confirmLabel(phase: Phase, side: Side, tradable: boolean, connected: bo
     case "ok":
       return "Position confirmed ✓";
     case "error":
-      return `Sign $TROLL entry (${side})`;
+      return `Predict ${side}`;
   }
 }
 

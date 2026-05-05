@@ -128,7 +128,11 @@ button, input { font: inherit; }
 .side-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }
 .side-row button { border: 0; border-radius: 17px; padding: 18px; font-weight: 1000; cursor: pointer; }
 .yes-side { background: #00ef61; color: #002010; }
-.no-side { background: rgba(0, 26, 13, .13); color: #092516; }
+/* Item 9 — NO active state must read as strong as YES.  Brand "no" token
+   is #FF3D6F (pink/red).  The inline opacity:0.55 on inactive buttons in
+   App.tsx provides the inactive/neutral feel; this rule guarantees that
+   when NO is active it pops with the same intensity as #00ef61 YES. */
+.no-side { background: #ff3d6f; color: #220006; }
 .amount-label { display: block; margin: 18px 0 8px; font-weight: 950; color: rgba(0, 28, 16, .72); }
 .amount-row { display: grid; grid-template-columns: 1fr 70px; gap: 10px; }
 .amount-row input, .amount-row button { border: 0; border-radius: 16px; padding: 18px; font-weight: 950; }
@@ -144,7 +148,12 @@ button, input { font: inherit; }
 .classic-float-card span { display: block; margin-top: 4px; font-size: 13px; opacity: .78; font-weight: 800; }
 .classic-float-card em { display: block; margin-top: 8px; color: rgba(255, 243, 228, .56); font-size: 11px; font-style: normal; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
 .live-clock { display: block; margin-top: 7px; color: #00ff69; font-size: 16px; line-height: 1; font-style: normal; font-weight: 1000; letter-spacing: .02em; text-shadow: 0 0 14px rgba(0,255,105,.55); }
-.mc-card { right: 520px; top: 18%; min-width: 190px; }
+/* Item 5 — MC card sits in the empty gap between the copy card and the
+   predict card.  Old position (right: 520px) put its right edge flush
+   against the predict card's left edge, and the rotate(-4deg) made the
+   corners poke into the predict panel on viewports under ~1280px wide.
+   Pulled further left + up so the visual is fully inside the gap. */
+.mc-card { right: clamp(560px, 47vw, 780px); top: 6%; min-width: 200px; }
 .mc-card.is-live::before { content: ""; position: absolute; top: 16px; right: 16px; width: 8px; height: 8px; border-radius: 999px; background: #00ff69; box-shadow: 0 0 12px rgba(0,255,105,.9); }
 .mc-card.is-stale::before { content: ""; position: absolute; top: 16px; right: 16px; width: 8px; height: 8px; border-radius: 999px; background: #ffb84d; box-shadow: 0 0 12px rgba(255,184,77,.8); }
 .yes-float { right: 490px; top: 49%; }
@@ -200,6 +209,21 @@ button, input { font: inherit; }
   border: 0;
 }
 
+/* Item 2 — per-card "Closing soon" visual.  Pulses the timer text in
+   brand pink (matches NO accent) so users see the state shift without
+   us blocking their entry.  The button itself stays clickable. */
+.market-option.closing-soon em {
+  color: #ff3d6f;
+  opacity: 1;
+  font-weight: 1000;
+  letter-spacing: .03em;
+  animation: closing-soon-pulse 1.4s ease-in-out infinite;
+}
+@keyframes closing-soon-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
 @media (max-width: 1050px) {
   .classic-page { overflow: auto; }
   .classic-frame { padding: 14px; }
@@ -207,7 +231,23 @@ button, input { font: inherit; }
   .classic-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
   .classic-hero { grid-template-columns: 1fr; gap: 24px; padding-top: 18px; }
   .classic-predict-card { justify-self: stretch; width: 100%; }
+  /* Default: hide the decorative YES/NO float cards on small viewports
+     since they're absolutely positioned for desktop layout. */
   .classic-float-card { display: none; }
+  /* Item 5 mobile — restore the MC card on small viewports, but as a
+     stacked block above the predict panel (no longer absolutely
+     positioned, no rotation, full readable width). */
+  .mc-card.is-live, .mc-card.is-stale {
+    display: block;
+    position: relative;
+    right: auto;
+    top: auto;
+    left: auto;
+    margin: 0 auto 16px;
+    width: 100%;
+    max-width: 360px;
+    transform: none;
+  }
   .coin-day-section { grid-template-columns: 1fr; margin-top: 24px; padding: 14px; }
   .classic-copy-card h1 { font-size: clamp(48px, 16vw, 76px); }
 }

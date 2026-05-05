@@ -165,22 +165,15 @@ function fmtCents(c: number | undefined | null): string {
 /**
  * Build the three predict-panel slots from the full /api/markets response.
  *
- * The API may return MORE than 3 markets — old voided/settled rows can sit
- * alongside the current open/locked ones, especially after a deploy or a
- * burst of lifecycle ticks.  We delegate the priority + recency rules to
- * the shared `pickPanelMarkets` helper (single source of truth, also used
- * by HomePage and TrollPage) and then map onto the discriminated render
- * state the renderer below already understands:
+ * Selection rules live in `services/marketSelection.ts` (single source of
+ * truth — also used by HomePage and TrollPage).  Priority order:
+ *   open > locked > settling > settled > voided
+ * Within a status bucket the LATEST closeAt wins (req 4).
  *
- *   "active"    → any non-settling pick → render the real MarketOptionButton
- *                 (open / locked / settled / voided — req 4 says show ONE
- *                 card per slot regardless of status; the visual difference
- *                 between tradable and not is conveyed by the existing
- *                 useShortCountdown which returns "locked" for past lockAt)
- *   "settling"  → fallback hit a settling row → "Settling…" placeholder
- *                 (the dedicated transitional UX for the brief window
- *                 between close and replacement)
- *   "missing"   → no market exists at all for that schedule (cold start)
+ * Render-state mapping (the renderer below already understands this shape):
+ *   "active"    → real MarketOptionButton (any non-settling pick)
+ *   "settling"  → "Settling…" placeholder for the brief gap window
+ *   "missing"   → "Creating market…" placeholder when no row exists at all
  */
 const PANEL_SLOTS: ScheduleType[] = ["15m", "hourly", "daily"];
 
@@ -189,8 +182,7 @@ function buildPanelSlots(all: MarketSummary[]): Array<{
   market: MarketSummary | null;
   status: "active" | "settling" | "missing";
 }> {
-  const picks = pickPanelMarkets(all);
-  return picks.map(({ scheduleType, market }) => {
+  return pickPanelMarkets(all).map(({ scheduleType, market }) => {
     if (market == null) {
       return { scheduleType, market: null, status: "missing" as const };
     }
@@ -252,9 +244,9 @@ function Brand() {
  * What changed:
  *   - The hardcoded `markets` array is gone.
  *   - The predict card pulls real markets from /api/markets, and:
- *       · option buttons render real (id, schedule, lockAt, prices, volume)
+ *       · option buttons render real (id, schedule, closeAt, prices, volume)
  *       · YES/NO floating cards reflect the SELECTED real market's prices
- *       · the timer pill counts down to the SELECTED market's lockAt
+ *       · the timer pill counts down to the SELECTED market's closeAt
  *       · the question heading shows the selected market's real target_mc
  *       · the YES/NO side toggle drives an auto-debounced /quote call
  *       · the amount input + MAX uses the real wallet $TROLL balance
@@ -357,7 +349,9 @@ function ClassicHome() {
 
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
 
-  const tradable = !!selected && selected.status === "open" && new Date(selected.lockAt) > new Date();
+  // v17: tradability is gated on closeAt, not lockAt — users can predict
+  // any time before close, even in the final seconds.
+  const tradable = !!selected && selected.status === "open" && new Date(selected.closeAt) > new Date();
 
   // Auto-quote whenever (selected, side, amount) settle.
   useEffect(() => {
@@ -396,8 +390,8 @@ function ClassicHome() {
     };
   }, [selected, side, amount, tradable]);
 
-  // Countdown for the timer pill is bound to the selected market.
-  const headlineCountdown = useShortCountdown(selected ? new Date(selected.lockAt) : null);
+  // Countdown for the timer pill is bound to the selected market's closeAt.
+  const headlineCountdown = useShortCountdown(selected ? new Date(selected.closeAt) : null);
 
   const onMax = () => {
     if (balance.balance != null && balance.balance > 0) {
@@ -425,7 +419,7 @@ function ClassicHome() {
       return;
     }
     if (!tradable) {
-      setPhase({ kind: "error", message: "Market is locked." });
+      setPhase({ kind: "error", message: "Market is closed." });
       return;
     }
     if (amount <= 0) {
@@ -511,7 +505,7 @@ function ClassicHome() {
   const signButtonLabel = (() => {
     if (!wallet.connected) return "Connect wallet to predict";
     if (!selected) return marketsError ? "Markets unavailable" : "Loading markets…";
-    if (!tradable) return "Market locked";
+    if (!tradable) return "Market closed";
     switch (phase.kind) {
       case "quoting":
         return "Quoting…";
@@ -526,7 +520,7 @@ function ClassicHome() {
       case "error":
         return "Try again";
       default:
-        return "Sign $TROLL entry";
+        return `Predict ${side}`;
     }
   })();
 
@@ -762,16 +756,28 @@ function MarketOptionButton({
   active: boolean;
   onClick: () => void;
 }) {
-  const time = useShortCountdown(new Date(market.lockAt));
+  // v17: countdown ticks to closeAt (not lockAt).  The "Closing soon" chip
+  // (item 2) appears in the final 60s — no entry blocking, just a visual
+  // cue that price action is most volatile right now.
+  const closeAtDate = useMemo(() => new Date(market.closeAt), [market.closeAt]);
+  const time = useShortCountdown(closeAtDate);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const msUntilClose = closeAtDate.getTime() - nowMs;
+  const closingSoon = market.status === "open" && msUntilClose > 0 && msUntilClose < 60_000;
+
   return (
     <button
       type="button"
-      className={`market-option ${active ? "active" : ""}`}
+      className={`market-option ${active ? "active" : ""} ${closingSoon ? "closing-soon" : ""}`}
       onClick={onClick}
     >
       <span>
         <b>{SCHEDULE_LABEL[market.scheduleType]}</b>
-        <em>{time}</em>
+        <em>{closingSoon ? `Closing soon · ${time}` : time}</em>
       </span>
       <small>{market.question}</small>
       <span className="price-row">

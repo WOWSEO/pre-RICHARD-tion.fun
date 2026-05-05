@@ -7,23 +7,13 @@ import type { ScheduleType } from "../market/marketTypes";
  * (predict panel on App.tsx, home-page live preview, troll-page list)
  * agree on which market is "the current one" for a given schedule.
  *
- * Why one helper:
- *   The API may return multiple markets per schedule_type during normal
- *   lifecycle transitions (a fresh OPEN market alongside the previous
- *   VOIDED / SETTLED rows).  Without a shared rule, different pages would
- *   pick different rows and the user would see contradicting info.
- *
- * Selection rules (encoded below):
- *   1. Group by scheduleType — only consider rows for the requested slot.
+ * Selection rules:
+ *   1. Group by scheduleType.
  *   2. Walk this status priority ladder:
  *        open > locked > settling > settled > voided
  *      The first non-empty bucket wins.  Lower-priority statuses are
- *      NEVER considered when a higher-priority one exists for the slot —
- *      so an OPEN 15m beats every VOIDED 15m, every time.
+ *      NEVER chosen when a higher-priority one exists for the slot.
  *   3. Within the chosen bucket, pick the row with the LATEST closeAt.
- *      If two OPEN markets exist for the same schedule (rare; the DB's
- *      partial unique index prevents this in steady state but it can
- *      happen in a brief race), the newer-closing one is the live one.
  */
 
 const PANEL_SCHEDULES: ScheduleType[] = ["15m", "hourly", "daily"];
@@ -36,7 +26,6 @@ const STATUS_PRIORITY: Record<MarketSummary["status"], number> = {
   voided: 4,
 };
 
-/** Returns the chosen market for a single schedule, or null if no rows exist. */
 export function pickMarketForSchedule(
   all: readonly MarketSummary[],
   schedule: ScheduleType,
@@ -52,7 +41,6 @@ export function pickMarketForSchedule(
       bestRank = rank;
       continue;
     }
-    // Same priority bucket — break the tie on closeAt (newer wins).
     if (new Date(m.closeAt).getTime() > new Date(best!.closeAt).getTime()) {
       best = m;
     }
@@ -61,9 +49,8 @@ export function pickMarketForSchedule(
 }
 
 /**
- * One slot per [15m, hourly, daily] in fixed order.  An entry's `market` is
- * null only when the API has zero rows for that schedule (cold start, never
- * seeded).  Use for the main predict panel where every slot must render.
+ * One slot per [15m, hourly, daily] in fixed order.  An entry's `market`
+ * is null only when the API has zero rows for that schedule (cold start).
  */
 export function pickPanelMarkets(
   all: readonly MarketSummary[],
@@ -77,8 +64,7 @@ export function pickPanelMarkets(
 /**
  * The 0-3 actively-tradable picks (one per schedule), filtered to OPEN or
  * LOCKED only — schedules whose top-priority pick is below LOCKED are
- * excluded so home-page "live markets" sections don't list stale voided
- * rows.  Order is fixed [15m, hourly, daily] for any present schedule.
+ * excluded so home-page "live markets" sections don't list stale rows.
  */
 export function pickActivePanelMarkets(
   all: readonly MarketSummary[],

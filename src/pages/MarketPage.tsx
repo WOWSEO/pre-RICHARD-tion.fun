@@ -17,7 +17,7 @@ export function MarketPage() {
   const { withdrawals, refresh: refreshWithdrawals } = useUserWithdrawals(walletAddr);
 
   // Countdown must be called unconditionally
-  const closeTime = market ? new Date(market.lockAt) : new Date();
+  const closeTime = market ? new Date(market.closeAt) : new Date();
   const { hh, mm, ss, expired } = useCountdown(closeTime);
 
   if (!market && loading) {
@@ -236,7 +236,8 @@ function PositionRow({
   const [exiting, setExiting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isYes = position.side === "YES";
-  const tradable = market.status === "open" && new Date(market.lockAt) > new Date();
+  // v17: tradable while status === "open" AND now < closeAt.  No lockAt gating.
+  const tradable = market.status === "open" && new Date(market.closeAt) > new Date();
   const currentPriceCents = isYes ? market.yesPriceCents : market.noPriceCents;
   const markValue = (position.shares * currentPriceCents) / 100;
   const unreal = markValue - position.costBasisTroll;
@@ -285,14 +286,14 @@ function PositionRow({
         disabled={!tradable || exiting}
         title={
           !tradable
-            ? "Trading is locked — payout will arrive at settlement"
+            ? "Trading is closed — payout will arrive at settlement"
             : exiting
               ? "Exiting…"
               : "Sell shares back to the AMM and queue a refund"
         }
         className="rounded-full bg-cream-100/10 px-3.5 py-1.5 text-[11px] font-mono uppercase tracking-wider text-cream-100 ring-1 ring-cream-100/15 transition hover:bg-cream-100/20 disabled:opacity-40"
       >
-        {exiting ? "Exiting…" : tradable ? "Exit" : "Locked"}
+        {exiting ? "Exiting…" : tradable ? "Exit" : "Closed"}
       </button>
     </div>
   );

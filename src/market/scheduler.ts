@@ -156,8 +156,17 @@ export function createMarket(input: CreateMarketInput): Market {
 
 /**
  * Advances time-based transitions:
- *   open    → locked    when now ≥ market.lockAt
+ *   open    → locked    when now ≥ market.closeAt
  *   locked  → settling  when now ≥ market.closeAt + windowSeconds/2
+ *
+ * Product-rule note (v17 onward):
+ *   `lockAt` is no longer a behavioral cutoff for entry.  Users can predict
+ *   any time before `closeAt`, including the final seconds of the window —
+ *   the whole point of higher/lower markets is that conviction sharpens as
+ *   close approaches.  The `lockAt` column is preserved on the wire for
+ *   backwards compatibility (older clients still read it) but the brain
+ *   now uses `closeAt` as the lock trigger.  Frontends that previously
+ *   read lockAt for "is this enterable" checks should switch to closeAt.
  *
  * On the open → locked transition, every still-open position is also marked
  * "locked" (per spec position.status enum) — exits are gated on market.status,
@@ -166,7 +175,7 @@ export function createMarket(input: CreateMarketInput): Market {
  * settling → settled / voided is driven by the settlement engine.
  */
 export function tick(market: Market, now: Date): void {
-  if (market.status === "open" && now.getTime() >= market.lockAt.getTime()) {
+  if (market.status === "open" && now.getTime() >= market.closeAt.getTime()) {
     market.status = "locked";
     for (const p of market.positions) {
       if (p.status === "open") {
@@ -184,8 +193,18 @@ export function tick(market: Market, now: Date): void {
   }
 }
 
+/**
+ * True iff a user can enter this market right now.  Aligned with the
+ * v17 product rule: gate on status === "open", which (after the
+ * lockAt → closeAt change above) implicitly enforces "before closeAt".
+ *
+ * Defensive belt-and-braces: also re-checks closeAt directly in case a
+ * caller queries before tick() ran on a stale in-memory market object.
+ */
 export function isTradingAllowed(market: Market): boolean {
-  return market.status === "open";
+  if (market.status !== "open") return false;
+  if (Date.now() >= market.closeAt.getTime()) return false;
+  return true;
 }
 
 /** Returns the [start, end] time range of the close window. */

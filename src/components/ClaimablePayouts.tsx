@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, type WireWithdrawal } from "../services/apiClient";
 import { EscrowStatus } from "./EscrowStatus";
 import { formatTrollBalance } from "../services/trollBalance";
@@ -10,10 +11,13 @@ import { formatTrollBalance } from "../services/trollBalance";
  * Sent    = transaction broadcast, awaiting cluster confirmation.
  * Confirmed = $TROLL is in the recipient wallet, with a Solscan link.
  *
- * `connectedWallet` (when supplied) enables the inline Claim button on every
+ * `connectedWallet` (when supplied) enables the inline action button on every
  * `pending` row whose wallet matches.  That button calls /api/positions/
  * withdrawals/:id/claim, which is the SAME server-side path the admin and
  * cron use — same atomic CAS, same SPL transfer, same idempotency.
+ *
+ * `buttonLabel` (v18, item 6) controls the button copy: "Claim" for
+ * winnings, "Refund" for void/exit refunds.  Defaults to "Claim".
  *
  * `onClaimed(id)` is invoked after a successful claim so the parent can
  * refresh its list (the row will already have moved to status='confirmed' by
@@ -25,12 +29,14 @@ export function ClaimablePayouts({
   emptyHint,
   connectedWallet,
   onClaimed,
+  buttonLabel = "Claim",
 }: {
   withdrawals: WireWithdrawal[];
   filterMarketId?: string;
   emptyHint?: string;
   connectedWallet?: string | null;
   onClaimed?: (id: number) => void;
+  buttonLabel?: "Claim" | "Refund";
 }) {
   const rows = useMemo(() => {
     const filtered = filterMarketId
@@ -88,6 +94,7 @@ export function ClaimablePayouts({
         const showClaim = isOwner && w.status === "pending";
         const isBusy = busyId === w.id;
         const claimError = errorById[w.id];
+        const busyLabel = buttonLabel === "Refund" ? "Refunding…" : "Claiming…";
         return (
           <div
             key={w.id}
@@ -123,14 +130,28 @@ export function ClaimablePayouts({
                 signature={w.signature}
                 reason={w.failure_reason}
               />
+              {/* Item 6 — "View market" link on every row, regardless of
+                  status, so users can audit where each row came from. */}
+              {!filterMarketId && (
+                <Link
+                  to={`/market/${w.market_id}`}
+                  className="rounded-full bg-cream-100/8 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider text-cream-100 ring-1 ring-cream-100/15 transition hover:bg-cream-100/15"
+                >
+                  View market
+                </Link>
+              )}
               {showClaim && (
                 <button
                   type="button"
                   disabled={isBusy}
                   onClick={() => onClaim(w)}
-                  className="rounded-full bg-yes px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider text-ink-200 ring-1 ring-yes/40 transition hover:shadow-yes-glow disabled:opacity-50 disabled:cursor-not-allowed"
+                  className={`rounded-full px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider text-ink-200 ring-1 transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                    buttonLabel === "Refund"
+                      ? "bg-no ring-no/40 hover:shadow-no-glow"
+                      : "bg-yes ring-yes/40 hover:shadow-yes-glow"
+                  }`}
                 >
-                  {isBusy ? "Claiming…" : "Claim"}
+                  {isBusy ? busyLabel : buttonLabel}
                 </button>
               )}
             </div>

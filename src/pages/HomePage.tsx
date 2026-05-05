@@ -10,15 +10,12 @@ export function HomePage() {
   const { markets, loading, error } = useServerMarkets();
   const [showCotd, setShowCotd] = useState(false);
 
-  // Show only ACTIVE picks up top — one per schedule, prioritized
-  // open > locked, latest-closeAt within bucket.  Old voided rows that
-  // sit alongside fresh open ones never appear here.
+  // Show only ACTIVE picks up top — one per schedule, priority + latest
+  // closeAt.  Old voided rows that sit alongside fresh open ones can't
+  // appear here; pickActivePanelMarkets filters to {open, locked} only.
   const openMarkets = pickActivePanelMarkets(markets);
 
-  // Floating YES/NO chips read from the freshest active market.  We pull
-  // from the already-prioritized list (rather than `markets[0]`, which
-  // could be a voided row depending on API ordering) so the chips never
-  // show stale prices when a live market exists.
+  // Floating YES/NO chips read from the freshest active market.
   const lead = openMarkets[0] ?? markets[0];
   const yesCents = lead?.yesPriceCents ?? 50;
   const noCents = lead?.noPriceCents ?? 50;
