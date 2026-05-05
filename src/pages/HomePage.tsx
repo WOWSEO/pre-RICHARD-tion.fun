@@ -4,21 +4,27 @@ import { FloatingHeroCards } from "../components/FloatingHeroCards";
 import { CoinOfDayModal } from "../components/CoinOfDayModal";
 import { MarketCard } from "../components/MarketCard";
 import { useServerMarkets } from "../hooks/useServerMarkets";
+import { pickActivePanelMarkets } from "../services/marketSelection";
 
 export function HomePage() {
   const { markets, loading, error } = useServerMarkets();
   const [showCotd, setShowCotd] = useState(false);
 
-  // Pull the freshest YES/NO from the first OPEN market for the floating chips.
-  const lead = markets.find((m) => m.status === "open") ?? markets[0];
+  // Show only ACTIVE picks up top — one per schedule, prioritized
+  // open > locked, latest-closeAt within bucket.  Old voided rows that
+  // sit alongside fresh open ones never appear here.
+  const openMarkets = pickActivePanelMarkets(markets);
+
+  // Floating YES/NO chips read from the freshest active market.  We pull
+  // from the already-prioritized list (rather than `markets[0]`, which
+  // could be a voided row depending on API ordering) so the chips never
+  // show stale prices when a live market exists.
+  const lead = openMarkets[0] ?? markets[0];
   const yesCents = lead?.yesPriceCents ?? 50;
   const noCents = lead?.noPriceCents ?? 50;
   const totalUsers = new Set(
     markets.flatMap(() => []) // we don't have a user list endpoint yet — keep simple
   ).size;
-
-  // Show only open markets up top
-  const openMarkets = markets.filter((m) => m.status === "open" || m.status === "locked").slice(0, 3);
 
   return (
     <main className="relative min-h-screen pb-24 pt-28 sm:pt-32">

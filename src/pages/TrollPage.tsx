@@ -3,12 +3,16 @@ import { useTrollMarketData } from "../hooks/useTrollMarketData";
 import { useServerMarkets } from "../hooks/useServerMarkets";
 import { formatMC, formatPrice } from "../services/marketData";
 import { TrollChart } from "../components/TrollChart";
+import { pickActivePanelMarkets } from "../services/marketSelection";
 
 export function TrollPage() {
   const { markets, loading, error } = useServerMarkets();
   const { data, loading: mdLoading } = useTrollMarketData();
 
-  const open = markets.filter((m) => m.status === "open" || m.status === "locked");
+  // Active picks — one per schedule, priority + latest-closeAt.  The
+  // separate `recent` section below is a deliberate history feed of
+  // settled/voided markets, not a fallback list.
+  const open = pickActivePanelMarkets(markets);
   const recent = markets.filter((m) => m.status === "settled" || m.status === "voided").slice(0, 6);
 
   return (

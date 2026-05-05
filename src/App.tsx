@@ -13,6 +13,7 @@ import { useServerMarkets, useUserWithdrawals } from "./hooks/useServerMarkets";
 import { useTrollBalance } from "./hooks/useTrollBalance";
 import { useShortCountdown } from "./hooks/useShortCountdown";
 import { api, type MarketSummary } from "./services/apiClient";
+import { pickPanelMarkets } from "./services/marketSelection";
 import { depositToEscrow, getTrollDecimals } from "./services/escrow";
 import { formatTrollBalance } from "./services/trollBalance";
 import type { Side, TradeQuote, ScheduleType } from "./market/marketTypes";
@@ -161,6 +162,26 @@ function fmtCents(c: number | undefined | null): string {
  * The brief "settling" window (between close and replacement) shows up as a
  * null slot, which the UI renders as "Creating new <type> market…".
  */
+/**
+ * Build the three predict-panel slots from the full /api/markets response.
+ *
+ * The API may return MORE than 3 markets — old voided/settled rows can sit
+ * alongside the current open/locked ones, especially after a deploy or a
+ * burst of lifecycle ticks.  We delegate the priority + recency rules to
+ * the shared `pickPanelMarkets` helper (single source of truth, also used
+ * by HomePage and TrollPage) and then map onto the discriminated render
+ * state the renderer below already understands:
+ *
+ *   "active"    → any non-settling pick → render the real MarketOptionButton
+ *                 (open / locked / settled / voided — req 4 says show ONE
+ *                 card per slot regardless of status; the visual difference
+ *                 between tradable and not is conveyed by the existing
+ *                 useShortCountdown which returns "locked" for past lockAt)
+ *   "settling"  → fallback hit a settling row → "Settling…" placeholder
+ *                 (the dedicated transitional UX for the brief window
+ *                 between close and replacement)
+ *   "missing"   → no market exists at all for that schedule (cold start)
+ */
 const PANEL_SLOTS: ScheduleType[] = ["15m", "hourly", "daily"];
 
 function buildPanelSlots(all: MarketSummary[]): Array<{
@@ -168,21 +189,15 @@ function buildPanelSlots(all: MarketSummary[]): Array<{
   market: MarketSummary | null;
   status: "active" | "settling" | "missing";
 }> {
-  return PANEL_SLOTS.map((sched) => {
-    const sameSched = all.filter((m) => m.scheduleType === sched);
-    // Pick the active one (open|locked), earliest-closing first.
-    const active = sameSched
-      .filter((m) => m.status === "open" || m.status === "locked")
-      .sort((a, b) => new Date(a.closeAt).getTime() - new Date(b.closeAt).getTime())[0];
-    if (active) {
-      return { scheduleType: sched, market: active, status: "active" as const };
+  const picks = pickPanelMarkets(all);
+  return picks.map(({ scheduleType, market }) => {
+    if (market == null) {
+      return { scheduleType, market: null, status: "missing" as const };
     }
-    // None active — is one currently settling?  Show that briefly.
-    const settling = sameSched.find((m) => m.status === "settling");
-    if (settling) {
-      return { scheduleType: sched, market: settling, status: "settling" as const };
+    if (market.status === "settling") {
+      return { scheduleType, market, status: "settling" as const };
     }
-    return { scheduleType: sched, market: null, status: "missing" as const };
+    return { scheduleType, market, status: "active" as const };
   });
 }
 
