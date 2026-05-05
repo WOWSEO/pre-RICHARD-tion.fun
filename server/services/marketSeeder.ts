@@ -121,7 +121,10 @@ function formatMcShort(n: number): string {
  * Race-safe: relies on the partial unique index `markets_one_active_per_schedule`
  * to make the INSERT fail if another process already created one.
  */
-export async function seedSingle(scheduleType: ScheduleType): Promise<SeedSingleResult> {
+export async function seedSingle(
+  scheduleType: ScheduleType,
+  preFetchedSnapshot?: LiveSnapshot,
+): Promise<SeedSingleResult> {
   const sb = db();
 
   // Pre-flight check — cheap.
@@ -140,22 +143,37 @@ export async function seedSingle(scheduleType: ScheduleType): Promise<SeedSingle
     return { scheduleType, created: false, reason: "already_active", marketId: existing.id };
   }
 
-  console.info(`[seed] snapshotting schedule=${scheduleType}`);
-  // Snapshot.  If this throws, abort cleanly — caller treats as "try again".
+  // Use the caller-supplied snapshot when available, otherwise fetch.
+  // The tick endpoint passes one snapshot to all 3 schedules in a single
+  // tick so we hit DexScreener once per cron, not once per schedule.
   let snapshot: LiveSnapshot;
-  try {
-    snapshot = await fetchTrollSnapshot();
-  } catch (err) {
-    console.warn(`[seed] snapshot-failed schedule=${scheduleType} reason=${(err as Error).message}`);
-    return {
-      scheduleType,
-      created: false,
-      reason: `snapshot_failed: ${(err as Error).message}`,
-    };
+  if (preFetchedSnapshot) {
+    snapshot = preFetchedSnapshot;
+    console.info(
+      `[seed] using-prefetched schedule=${scheduleType} source=${snapshot.source} ` +
+        `fromCache=${snapshot.fromCache} ageMs=${snapshot.ageMs}`,
+    );
+  } else {
+    console.info(`[seed] snapshotting schedule=${scheduleType}`);
+    try {
+      snapshot = await fetchTrollSnapshot();
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.warn(`[seed] snapshot-failed schedule=${scheduleType} reason=${msg}`);
+      // Surface the snapshot error VERBATIM so the tick endpoint can put it
+      // in errors[] without further wrapping — the operator sees exactly
+      // what failed (e.g. "snapshot_unavailable_no_fresh_cache: ...").
+      return {
+        scheduleType,
+        created: false,
+        reason: msg,
+      };
+    }
   }
   console.info(
     `[seed] snapshot schedule=${scheduleType} mc=$${(snapshot.marketCapUsd / 1e6).toFixed(2)}M ` +
-      `price=$${snapshot.priceUsd.toFixed(8)} source=${snapshot.source}`,
+      `price=$${snapshot.priceUsd.toFixed(8)} source=${snapshot.source} ` +
+      `fromCache=${snapshot.fromCache}`,
   );
 
   // Build the in-memory market via the existing brain helper, then override
@@ -223,20 +241,100 @@ export async function seedSingle(scheduleType: ScheduleType): Promise<SeedSingle
 /**
  * Walk all 3 schedule types and seed any empty slot.
  *
- * Returns a structured summary suitable for logging / the admin response.
+ * Snapshot strategy:
+ *   - First, list which schedules are currently empty (one cheap query).
+ *   - If none are empty → return early without hitting any snapshot provider.
+ *   - If some are empty → fetch ONE snapshot and pass it to every seedSingle
+ *     call.  This keeps the per-tick provider hit count to 1 instead of 3,
+ *     which is what causes the 429 cascade in production.
+ *
+ * The optional `preBuiltSnapshot` parameter lets the manual-snapshot admin
+ * endpoint inject an operator-supplied value, bypassing live fetches
+ * entirely — useful when DexScreener / GeckoTerminal are both unhappy and
+ * the operator just wants to unstick the lifecycle.
+ *
+ * Returns a structured summary.  Per-schedule failures (snapshot unavailable,
+ * race lost, etc.) are reflected in `results[].reason` — the tick endpoint
+ * inspects these to populate `errors[]` in its JSON response.
  */
-export async function ensureOneActivePerSchedule(): Promise<{
-  results: SeedSingleResult[];
-}> {
+export async function ensureOneActivePerSchedule(
+  preBuiltSnapshot?: LiveSnapshot,
+): Promise<{ results: SeedSingleResult[] }> {
+  const sb = db();
+
+  // 1) Determine which schedules need creation.
+  const { data: activeRows, error: activeErr } = await sb
+    .from("markets")
+    .select("id, schedule_type, status")
+    .in("status", ["open", "locked", "settling"])
+    .returns<{ id: string; schedule_type: ScheduleType; status: string }[]>();
+  if (activeErr) throw activeErr;
+  const activeBySched = new Map<ScheduleType, { id: string; status: string }>();
+  for (const r of activeRows ?? []) {
+    activeBySched.set(r.schedule_type, { id: r.id, status: r.status });
+  }
+  const needsFill = ALL_SCHEDULES.filter((s) => !activeBySched.has(s));
+
+  // 2) Short-circuit when nothing needs filling.
+  if (needsFill.length === 0) {
+    console.info(`[seed] ensure-noop all-3-active`);
+    return {
+      results: ALL_SCHEDULES.map((s) => ({
+        scheduleType: s,
+        created: false,
+        reason: "already_active",
+        marketId: activeBySched.get(s)!.id,
+      })),
+    };
+  }
+
+  // 3) Acquire the snapshot ONCE for all needed creates.
+  let snapshot: LiveSnapshot | null = preBuiltSnapshot ?? null;
+  let snapshotError: string | null = null;
+  if (!snapshot) {
+    console.info(`[seed] ensure-fetching needsFill=${needsFill.join(",")}`);
+    try {
+      snapshot = await fetchTrollSnapshot();
+    } catch (err) {
+      snapshotError = (err as Error).message;
+      console.warn(`[seed] ensure-snapshot-failed reason=${snapshotError}`);
+    }
+  }
+
+  // 4) Walk all 3 schedules, building a per-schedule result.  Already-active
+  // schedules return immediately; empty schedules either get the snapshot
+  // (and a real seed attempt) or get the snapshot error verbatim as their
+  // reason — so the tick endpoint can put it in errors[].
   const results: SeedSingleResult[] = [];
   for (const sched of ALL_SCHEDULES) {
-    try {
-      results.push(await seedSingle(sched));
-    } catch (err) {
+    const active = activeBySched.get(sched);
+    if (active) {
       results.push({
         scheduleType: sched,
         created: false,
-        reason: `error: ${(err as Error).message}`,
+        reason: "already_active",
+        marketId: active.id,
+      });
+      continue;
+    }
+    if (snapshot) {
+      try {
+        results.push(await seedSingle(sched, snapshot));
+      } catch (err) {
+        results.push({
+          scheduleType: sched,
+          created: false,
+          reason: `error: ${(err as Error).message}`,
+        });
+      }
+    } else {
+      results.push({
+        scheduleType: sched,
+        created: false,
+        // snapshotError is the verbatim error string from fetchTrollSnapshot —
+        // e.g. "snapshot_unavailable_no_fresh_cache: dexscreener: dexscreener_429
+        // | geckoterminal: geckoterminal_429 | cache: missing".
+        reason: snapshotError ?? "snapshot_unavailable",
       });
     }
   }

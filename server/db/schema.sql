@@ -271,3 +271,27 @@ end $$;
 
 -- No public write policies are defined.  All mutations go through the Express
 -- server, which uses SUPABASE_SERVICE_ROLE_KEY (bypasses RLS).
+
+-- ============================================================================
+-- oracle_snapshots — cache for the tick endpoint's live MC reads.
+-- Added by migration 002 for new installs; the migration file applies the
+-- same DDL idempotently to existing installs.
+-- ============================================================================
+create table if not exists oracle_snapshots (
+  id              bigserial primary key,
+  symbol          text        not null,
+  price_usd       numeric     not null,
+  market_cap      numeric     not null,
+  fdv             numeric,
+  source          text        not null,
+  raw_payload     jsonb,
+  created_at      timestamptz not null default now()
+);
+create index if not exists oracle_snapshots_symbol_created_at_idx
+  on oracle_snapshots (symbol, created_at desc);
+alter table oracle_snapshots enable row level security;
+do $$
+begin
+  if not exists (select 1 from pg_policies where tablename = 'oracle_snapshots' and policyname = 'public read oracle snapshots')
+  then create policy "public read oracle snapshots" on oracle_snapshots for select using (true); end if;
+end $$;

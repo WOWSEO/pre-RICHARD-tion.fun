@@ -32,9 +32,15 @@ solana transfer <ESCROW_AUTHORITY_PUBKEY> 0.1 --from <YOUR_WALLET>
 
 In the Supabase SQL editor, paste and run, in this order:
 
-1. `server/db/schema.sql` — base schema (idempotent)
+1. `server/db/schema.sql` — base schema (idempotent; safe to re-run)
 2. `server/db/migrations/001_market_lifecycle.sql` — only if you applied
    `schema.sql` from a pre-v6 version
+3. `server/db/migrations/002_oracle_snapshots.sql` — adds the
+   `oracle_snapshots` cache table used by the tick endpoint to ride out
+   DexScreener / GeckoTerminal rate limits
+
+`schema.sql` already contains the `oracle_snapshots` DDL for fresh installs;
+the migration file is only for upgrading existing databases.
 
 Then collect:
 
@@ -306,6 +312,91 @@ The `requireAdmin` middleware accepts EITHER:
 
 Both compare to the same `ADMIN_API_KEY` env var.  Use whichever your
 cron tooling makes easier.
+
+---
+
+## 4¾. Snapshot rate-limiting recovery
+
+**Symptom from production logs:** `dexscreener_429 | geckoterminal_429`,
+`/api/admin/tick-markets` returns empty `created[]` and `errors[]`, all
+three slots empty.
+
+**What changed in v12:**
+
+1. **One snapshot per tick** — the seeder now fetches the live $TROLL MC
+   exactly ONCE per tick and reuses it for whichever of {15m, hourly, daily}
+   slots are empty.  Previously the tick fetched 3 times and amplified
+   rate-limit pressure 3×.
+2. **`oracle_snapshots` cache** — every successful live fetch is written
+   to a Supabase table.  When both providers 429, the snapshot service
+   reads the most-recent cached row.  If it's < 5 min old, it's used in
+   place of a live fetch.
+3. **Clear errors** — when no fresh cache exists either, the tick endpoint
+   surfaces a structured error string in `errors[]`:
+   ```
+   snapshot_unavailable_no_fresh_cache: dexscreener: dexscreener_429 |
+     geckoterminal: geckoterminal_429 | cache: 412s old (max 300s)
+   ```
+   No more silent empty objects.
+
+**If providers stay rate-limited longer than 5 min** (e.g., DexScreener has
+a multi-hour incident), the tick endpoint will surface
+`snapshot_unavailable_no_fresh_cache` repeatedly and slots will stay empty.
+Use the manual escape hatch:
+
+### Manual snapshot — admin endpoint
+
+Pick a market-cap value from any source you trust at the moment
+(CoinGecko, manual chart read, your own RPC) and POST it:
+
+```bash
+curl -X POST \
+  -H "x-admin-api-key: $ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"marketCap": 42500000, "priceUsd": 0.0000425, "source": "coingecko"}' \
+  $API/api/admin/seed-markets-from-manual-snapshot
+```
+
+Body:
+- `marketCap` (required) — USD market cap.  Becomes `open_mc` /
+  `target_mc` on every market this call creates.
+- `priceUsd` (optional) — display price.  Defaulted from `marketCap`
+  if omitted; the value isn't used for settlement math, only display.
+- `source` (optional) — free-form label saved with the cached row.
+
+The endpoint:
+1. Persists the manual snapshot to `oracle_snapshots` (so subsequent
+   automatic ticks fall back to it).
+2. Calls `ensureOneActivePerSchedule` with the manual snapshot, creating
+   whichever of 15m / hourly / daily are currently empty.
+3. Returns `{ ok, snapshot, results }` with a per-schedule `created`
+   flag and reason.
+
+### Manual snapshot — local CLI
+
+If you'd rather not expose the endpoint, run from the repo root:
+
+```bash
+npm run seed:markets:manual -- --mc 42500000
+npm run seed:markets:manual -- --mc 42500000 --price 0.0000425 --source coingecko
+
+# Or via env:
+MANUAL_MC=42500000 npm run seed:markets:manual
+```
+
+Same logic, same cache write, same outcome — just no HTTP exposure.
+
+### When to STOP using manual seeds
+
+The manual snapshot is a temporary fix.  Once DexScreener / GeckoTerminal
+recover, the next automatic tick:
+- Successfully fetches a live snapshot
+- Writes it to `oracle_snapshots` (replacing your manual entry as the
+  "most recent")
+- Future ticks revert to using live numbers
+
+You don't need to do anything to "switch back" — the resolution chain is
+self-healing.
 
 ---
 

@@ -74,7 +74,7 @@ export interface TickCreatedEntry {
   scheduleType: ScheduleType;
   openMc: number | null;
   openPriceUsd: number | null;
-  openSnapshotSource: "dexscreener" | "geckoterminal" | null;
+  openSnapshotSource: "dexscreener" | "geckoterminal" | "manual" | null;
   closeAt: string | null;
 }
 
@@ -193,6 +193,13 @@ export async function tickMarkets(): Promise<TickResult> {
   //    - schedules whose orchestrator hand-off failed (snapshot flake)
   //    - schedules whose handed-off market just settled in step 2 but
   //      seedSingle hadn't been called for them yet
+  //
+  // Important: the seeder fetches ONE snapshot for all 3 schedules in a
+  // single tick (not 3 separate fetches — that was the production 429
+  // amplifier).  Per-schedule failures come back in seedReport.results[i]
+  // as { created: false, reason: <string> } and we surface non-benign
+  // reasons into errors[] so the JSON response explains exactly why a slot
+  // is empty.
   console.info(`[tick] sweep-seed`);
   const seedReport = await ensureOneActivePerSchedule();
   for (const r of seedReport.results) {
@@ -208,6 +215,32 @@ export async function tickMarkets(): Promise<TickResult> {
           closeAt: null, // seeder doesn't return closeAt; read below if needed
         });
       }
+      continue;
+    }
+    // Non-creation outcome: classify as benign (skipped) or actionable (error).
+    // Benign = the slot is fine without a new market this tick.
+    // Actionable = the slot is EMPTY and we couldn't fill it; the operator
+    // needs to know why.
+    const reason = r.reason ?? "unknown";
+    const isBenign =
+      reason === "already_active" || // slot is already filled
+      reason === "race_lost"; // a concurrent seeder won
+    if (isBenign) {
+      // Surface in skipped[] so the operator can still see what happened —
+      // distinguishes "no work to do" from "work failed".  Use a synthetic
+      // marketId since seedReport doesn't always carry one.
+      skipped.push({
+        marketId: r.marketId ?? `<${r.scheduleType}>`,
+        reason,
+      });
+    } else {
+      // ACTIONABLE: snapshot failed, or some other unexpected error.  Put
+      // the verbatim reason in errors[] so the JSON response explains it.
+      console.warn(`[tick] seed-error schedule=${r.scheduleType} reason=${reason}`);
+      errors.push({
+        marketId: `<${r.scheduleType}>`,
+        error: reason,
+      });
     }
   }
 

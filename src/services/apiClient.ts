@@ -216,7 +216,7 @@ export const api = {
       reason: string | null;
       openMc: number | null;
       openPriceUsd: number | null;
-      openSource: "dexscreener" | "geckoterminal" | null;
+      openSource: "dexscreener" | "geckoterminal" | "manual" | null;
     }>("/admin/markets", {
       method: "POST",
       adminKey,
@@ -234,7 +234,7 @@ export const api = {
         reason: string | null;
         openMc: number | null;
         openPriceUsd: number | null;
-        openSource: "dexscreener" | "geckoterminal" | null;
+        openSource: "dexscreener" | "geckoterminal" | "manual" | null;
       }>;
     }>("/admin/seed-markets", {
       method: "POST",

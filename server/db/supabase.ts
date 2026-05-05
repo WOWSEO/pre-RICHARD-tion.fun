@@ -154,6 +154,24 @@ export interface MarketSnapshotRow {
   raw_payload: unknown;
 }
 
+/**
+ * oracle_snapshots — cache for the tick endpoint's live $TROLL MC reads.
+ *
+ * One row per successful provider call.  The seeder reads
+ * `ORDER BY created_at DESC LIMIT 1` and gates on freshness in app code
+ * (default 5-minute TTL).
+ */
+export interface OracleSnapshotRow {
+  id: number;
+  symbol: string;
+  price_usd: string;
+  market_cap: string;
+  fdv: string | null;
+  source: string;
+  raw_payload: unknown;
+  created_at: string;
+}
+
 /* ========================================================================== */
 /* Client bootstrap                                                           */
 /* ========================================================================== */

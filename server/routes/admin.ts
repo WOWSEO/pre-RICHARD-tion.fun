@@ -6,6 +6,7 @@ import { runPendingWithdrawals } from "../services/payoutEngine";
 import { escrowTokenAccount } from "../services/escrowVerifier";
 import { ensureOneActivePerSchedule, seedSingle } from "../services/marketSeeder";
 import { tickMarkets } from "../services/tickService";
+import { buildManualSnapshot } from "../services/marketSnapshot";
 import type { ScheduleType } from "../../src/market/marketTypes";
 
 export const adminRouter = Router();
@@ -159,6 +160,81 @@ adminRouter.post("/tick-markets", async (req, res) => {
     console.error(`[tick] FATAL ${msg}`);
     await logAction(actor, "tick_markets", {}, "error", msg);
     res.status(500).json({ error: "tick_failed", message: msg });
+  }
+});
+
+/* ========================================================================== */
+/* POST /api/admin/seed-markets-from-manual-snapshot                          */
+/* Body: { marketCap: number, priceUsd?: number, source?: string }            */
+/*                                                                            */
+/* Escape hatch for prolonged DexScreener / GeckoTerminal rate-limiting.      */
+/* Operator supplies a market-cap value (and optionally a price); the         */
+/* endpoint wraps it into a synthetic snapshot, persists it to the            */
+/* oracle_snapshots cache (so subsequent automatic ticks fall back to it),    */
+/* and runs ensureOneActivePerSchedule with the manual snapshot — creating    */
+/* whichever of {15m, hourly, daily} are currently empty.                     */
+/*                                                                            */
+/* This endpoint should ONLY be used during a confirmed provider outage.      */
+/* The supplied marketCap becomes open_mc / target_mc on every market it      */
+/* creates, so a wrong value will distort settlement outcomes.                */
+/* ========================================================================== */
+adminRouter.post("/seed-markets-from-manual-snapshot", async (req, res) => {
+  const actor = req.header("x-admin-actor") ?? "admin";
+  const body = req.body as { marketCap?: number; priceUsd?: number; source?: string };
+
+  try {
+    const marketCap = Number(body.marketCap);
+    if (!Number.isFinite(marketCap) || marketCap <= 0) {
+      throw new Error("invalid_market_cap");
+    }
+    const priceUsd =
+      body.priceUsd != null && Number.isFinite(Number(body.priceUsd)) && Number(body.priceUsd) > 0
+        ? Number(body.priceUsd)
+        : undefined;
+
+    console.info(
+      `[admin/manual-seed] mc=$${(marketCap / 1e6).toFixed(2)}M ` +
+        `price=${priceUsd ?? "auto"} source=${body.source ?? "manual"}`,
+    );
+
+    // Build the synthetic snapshot AND cache it.  Caching means the next
+    // automatic tick that runs while providers are still down will read
+    // this back from oracle_snapshots and continue advancing the lifecycle
+    // without further admin involvement.
+    const snapshot = await buildManualSnapshot({
+      marketCapUsd: marketCap,
+      priceUsd,
+      source: body.source,
+    });
+
+    const { results } = await ensureOneActivePerSchedule(snapshot);
+    await logAction(
+      actor,
+      "seed_markets_from_manual_snapshot",
+      { marketCap, priceUsd, source: body.source, results },
+      "ok",
+      null,
+    );
+    res.json({
+      ok: true,
+      snapshot: {
+        marketCap: snapshot.marketCapUsd,
+        priceUsd: snapshot.priceUsd,
+        source: snapshot.source,
+        fetchedAt: snapshot.fetchedAt.toISOString(),
+      },
+      results: results.map((r) => ({
+        scheduleType: r.scheduleType,
+        created: r.created,
+        marketId: r.marketId,
+        reason: r.reason,
+      })),
+    });
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error(`[admin/manual-seed] failed reason=${msg}`);
+    await logAction(actor, "seed_markets_from_manual_snapshot", body, "error", msg);
+    res.status(400).json({ error: "manual_seed_failed", message: msg });
   }
 });
 

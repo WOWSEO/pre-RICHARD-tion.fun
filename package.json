@@ -18,6 +18,7 @@
     "seed:markets": "tsx server/workers/seedMarkets.ts",
     "payouts:run": "tsx server/workers/payouts.ts",
     "tick:markets": "tsx server/workers/tickMarkets.ts",
+    "seed:markets:manual": "tsx server/workers/seedMarketsManual.ts",
     "typecheck": "tsc -b --noEmit && tsc -p server/tsconfig.json --noEmit"
   },
   "dependencies": {
