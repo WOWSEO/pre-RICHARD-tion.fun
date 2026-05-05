@@ -29,9 +29,14 @@ services:
     envVars:
       # Render injects PORT automatically — server/env.ts picks it up.
       - key: NODE_VERSION
-        value: "20"
-      - key: CLIENT_ORIGIN
-        value: https://pre-richard-tion.fun,https://www.pre-richard-tion.fun
+        value: "24.14.1"
+      - key: NODE_ENV
+        value: production
+      # CORS_ORIGINS — comma-separated, no trailing slashes.  The server reads
+      # this first; if absent it falls through to the legacy CLIENT_ORIGIN
+      # alias, then to NODE_ENV-aware defaults.
+      - key: CORS_ORIGINS
+        value: https://pre-richard-tion.fun,https://www.pre-richard-tion.fun,http://localhost:5173,http://localhost:5174
       - key: DEPOSIT_CONFIRMATION
         value: confirmed
       # Secrets — set in the Render dashboard.
@@ -61,7 +66,7 @@ services:
     startCommand: npm run seed:markets
     envVars:
       - key: NODE_VERSION
-        value: "20"
+        value: "24.14.1"
       - key: ADMIN_API_KEY
         sync: false
       - key: SUPABASE_URL
@@ -87,7 +92,7 @@ services:
     startCommand: npm run settle
     envVars:
       - key: NODE_VERSION
-        value: "20"
+        value: "24.14.1"
       - key: ADMIN_API_KEY
         sync: false
       - key: SUPABASE_URL
@@ -114,7 +119,7 @@ services:
     startCommand: npm run payouts:run
     envVars:
       - key: NODE_VERSION
-        value: "20"
+        value: "24.14.1"
       - key: ADMIN_API_KEY
         sync: false
       - key: SUPABASE_URL

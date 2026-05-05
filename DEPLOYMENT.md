@@ -69,7 +69,7 @@ three cron workers (seed, settle, payouts) in one click.
    | `TROLL_MINT`                 | mainnet $TROLL mint address                          |
    | `ESCROW_AUTHORITY_SECRET`    | base58 string from §0                                |
 
-   `CLIENT_ORIGIN` and `DEPOSIT_CONFIRMATION` already have safe defaults
+   `CORS_ORIGINS` and `DEPOSIT_CONFIRMATION` already have safe defaults
    in `render.yaml` — leave them.
 
 4. The four services will start. The web service exposes a URL like
@@ -94,7 +94,7 @@ If you don't want to use the Blueprint:
 - **Start Command**: `npm run server`
 - **Health Check Path**: `/healthz`
 - **Environment**: same six secrets as above, plus
-  `CLIENT_ORIGIN=https://pre-richard-tion.fun,https://www.pre-richard-tion.fun`
+  `CORS_ORIGINS=https://pre-richard-tion.fun,https://www.pre-richard-tion.fun`
 
 Then add three **Cron Jobs** (separate Render service type, free):
 
@@ -117,7 +117,7 @@ The repo includes `Procfile`, which Railway reads automatically.
 
    | Var               | Value                                                                |
    |-------------------|----------------------------------------------------------------------|
-   | `CLIENT_ORIGIN`   | `https://pre-richard-tion.fun,https://www.pre-richard-tion.fun`      |
+   | `CORS_ORIGINS`   | `https://pre-richard-tion.fun,https://www.pre-richard-tion.fun`      |
    | `DEPOSIT_CONFIRMATION` | `confirmed`                                                     |
 
    Railway injects `PORT` automatically.
@@ -171,15 +171,28 @@ just for the cron services and leave the web on Railway.
 
 ### CORS rejected (browser console: "blocked by CORS policy")
 
-The server logs `[server] CORS reject origin=...` on every rejection. Two
+The server logs `[server] CORS reject origin=...` on every rejection. Three
 likely causes:
 
 1. **Netlify deploys an alternate domain** like `<branch>--<site>.netlify.app`.
-   Add it to `CLIENT_ORIGIN` (comma-separated).
+   Add it to `CORS_ORIGINS` (comma-separated).
 2. **www-vs-apex mismatch**. Netlify's primary-domain redirect is HTTP-301,
    so the browser may end up on either `pre-richard-tion.fun` or
    `www.pre-richard-tion.fun` depending on user input. Both are in the
-   default allow-list, but if you customized `CLIENT_ORIGIN`, list both.
+   default allow-list, but if you customized `CORS_ORIGINS`, list both.
+3. **Stale legacy `CLIENT_ORIGIN` env var**. Earlier versions of the deploy
+   guide used `CLIENT_ORIGIN`; the server still reads it as a back-compat
+   fallback. The startup log shows the source explicitly, e.g.:
+
+   ```
+   [server] CORS allow-list (source=CORS_ORIGINS, NODE_ENV=production):
+     https://pre-richard-tion.fun, https://www.pre-richard-tion.fun, ...
+   ```
+
+   If `source=CLIENT_ORIGIN_legacy`, set `CORS_ORIGINS` in your dashboard
+   (it wins over the legacy var) and redeploy. If `source=default_*`,
+   your env var didn't make it into the running container — re-check
+   spelling and re-deploy.
 
 ### `/healthz` returns 503 / cold-start delay
 

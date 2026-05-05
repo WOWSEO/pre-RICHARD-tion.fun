@@ -23,7 +23,7 @@ function main(): void {
   // to ship a new build to find out.  Requests without an Origin header
   // (curl, server-to-server, native apps) bypass the check; that matches
   // standard CORS semantics.
-  const allowed = new Set(env.CLIENT_ORIGIN);
+  const allowed = new Set(env.CORS_ORIGINS);
   app.use(
     cors({
       origin: (origin, cb) => {
@@ -67,7 +67,9 @@ function main(): void {
   // on some Linux containers won't accept IPv4 connections from the proxy.
   app.listen(env.PORT, "0.0.0.0", () => {
     console.log(`[server] prerichardtion.fun API listening on 0.0.0.0:${env.PORT}`);
-    console.log(`[server] CORS allow-list: ${env.CLIENT_ORIGIN.join(", ")}`);
+    console.log(
+      `[server] CORS allow-list (source=${env.CORS_ORIGINS_SOURCE}, NODE_ENV=${process.env.NODE_ENV ?? "unset"}): ${env.CORS_ORIGINS.join(", ")}`,
+    );
   });
 }
 
