@@ -582,21 +582,8 @@ function ClassicHome() {
             <p className="classic-subcopy">
               Connect your wallet, show your $TROLL balance, pick YES or NO, and sign your $TROLL entry. Markets are real, escrowed on-chain, and settled by oracle median.
             </p>
-            {/* v21: CTA row removed.  No off-screen targets to scroll to —
-                the predict panel is already in the same viewport. */}
-            {/* v22: tiny external chart link.  Live MC pill in the float
-                card already gives at-a-glance numbers; this link is for
-                power users who want the full DexScreener candlestick.
-                Opens in a new tab so it doesn't break the one-page flow. */}
-            <a
-              className="chart-link"
-              href={import.meta.env.VITE_DEXSCREENER_PAIR_URL || "https://dexscreener.com/solana/4w2cysotx6czaugmmwg13hdpy4qemg2czekyeqyk9ama"}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              View live chart on DexScreener
-              <span aria-hidden> ↗</span>
-            </a>
+            {/* v24: no chart-link button — the embedded strip below
+                renders the live DexScreener chart on-page. */}
           </div>
 
           {/* Live MC card — UNCHANGED from prior version. */}
@@ -786,12 +773,19 @@ function ClassicHome() {
           </aside>
         </section>
 
-        {/* v21: coin-day section removed.  The black MC card in the hero
-            still shows live $TROLL MC, which is enough top-of-funnel
-            context for a one-page experience.  The DexScreener chart
-            iframe was the largest off-screen scroll target — by
-            dropping it we get the whole flow into one desktop
-            viewport without scrolling. */}
+        {/* v24: thin DexScreener strip docked to the bottom of the viewport.
+            v21 removed the full chart section to enforce one-page; v24
+            brings back a compact 200px-tall strip that fits in the
+            remaining viewport space below the hero.  Zero scroll on
+            desktop — the hero shrinks just enough to leave room. */}
+        <section className="chart-strip" aria-label="$TROLL live chart">
+          <iframe
+            title="$TROLL live chart"
+            src={chartUrl}
+            allow="clipboard-write"
+            loading="lazy"
+          />
+        </section>
       </div>
     </main>
   );

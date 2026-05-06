@@ -105,7 +105,10 @@ button, input { font: inherit; }
 .classic-nav-pill, .classic-actions button:not(.wallet-adapter-button) { border: 1px solid rgba(255,255,255,.22); background: rgba(230,231,218,.18); color: #f8fff4; border-radius: 999px; padding: 12px 20px; font-weight: 800; text-decoration: none; cursor: pointer; backdrop-filter: blur(14px); }
 .classic-actions > div button { white-space: nowrap; }
 
-.classic-hero { position: relative; min-height: calc(100vh - 100px); display: grid; grid-template-columns: minmax(420px, 1fr) minmax(430px, 520px); align-items: center; gap: min(10vw, 150px); padding-top: 20px; }
+/* v24: hero leaves room for the bottom-docked chart strip.
+   Frame total budget = 100vh.
+   Nav ≈ 70px + hero (this min-height) + chart-strip (200px) + small gap. */
+.classic-hero { position: relative; min-height: calc(100vh - 320px); display: grid; grid-template-columns: minmax(420px, 1fr) minmax(430px, 520px); align-items: center; gap: min(10vw, 150px); padding-top: 20px; }
 .classic-copy-card, .classic-predict-card, .classic-float-card { background: rgba(232, 230, 218, .91); border: 1px solid rgba(255,255,255,.55); box-shadow: 0 24px 90px rgba(0,0,0,.22); backdrop-filter: blur(18px) saturate(1.25); }
 .classic-copy-card { width: min(100%, 700px); border-radius: 34px; padding: clamp(34px, 5vw, 64px); }
 .classic-eyebrow { margin: 0 0 18px; color: #006c3b; text-transform: uppercase; letter-spacing: .28em; font-weight: 950; font-size: 13px; }
@@ -208,12 +211,18 @@ button, input { font: inherit; }
    against the predict card's left edge, and the rotate(-4deg) made the
    corners poke into the predict panel on viewports under ~1280px wide.
    Pulled further left + up so the visual is fully inside the gap. */
-.mc-card { right: clamp(560px, 47vw, 780px); top: 6%; min-width: 200px; }
+.mc-card { right: clamp(560px, 47vw, 780px); top: 8%; min-width: 200px; }
 .mc-card.is-live::before { content: ""; position: absolute; top: 16px; right: 16px; width: 8px; height: 8px; border-radius: 999px; background: #00ff69; box-shadow: 0 0 12px rgba(0,255,105,.9); }
 .mc-card.is-stale::before { content: ""; position: absolute; top: 16px; right: 16px; width: 8px; height: 8px; border-radius: 999px; background: #ffb84d; box-shadow: 0 0 12px rgba(255,184,77,.8); }
-.yes-float { right: 490px; top: 49%; }
+/* v25 spacing fix: YES/NO float cards repositioned so they:
+   (a) don't overlap the copy card on the left, and
+   (b) don't bleed into the v24 chart strip docked at the bottom.
+   Old: right:490px top:49% / right:540px bottom:13% — caused the bottom
+   card to land on top of the chart strip on tighter viewports.
+   New: shift them in toward the predict card and constrain vertically. */
+.yes-float { right: clamp(420px, 42vw, 560px); top: 38%; }
 .yes-float strong { color: #00ff69; }
-.no-float { right: 540px; bottom: 13%; }
+.no-float { right: clamp(470px, 46vw, 620px); top: 62%; }
 .no-float strong { color: #ff3e75; }
 
 .coin-day-section {
@@ -279,6 +288,27 @@ button, input { font: inherit; }
   50% { opacity: 0.55; }
 }
 
+/* v24 chart strip — bottom-docked thin DexScreener iframe.  Sits below
+   the hero, full-width, fixed height.  On desktop the hero grid shrinks
+   so this strip fits in the remaining viewport without scrolling. */
+.chart-strip {
+  position: relative;
+  z-index: 6;
+  margin: 18px 0 0;
+  height: 200px;
+  border-radius: 22px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 255, 114, .25);
+  background: rgba(0, 20, 12, .72);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .35);
+}
+.chart-strip iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
 @media (max-width: 1050px) {
   .classic-page { overflow: auto; }
   .classic-frame { padding: 14px; }
@@ -303,6 +333,8 @@ button, input { font: inherit; }
   }
   .coin-day-section { grid-template-columns: 1fr; margin-top: 24px; padding: 14px; }
   .classic-copy-card h1 { font-size: clamp(48px, 16vw, 76px); }
+  /* v24 chart strip mobile — slightly taller since mobile scrolls anyway. */
+  .chart-strip { height: 260px; margin-top: 14px; }
 }
 
 @media (max-width: 640px) {

@@ -17,6 +17,40 @@ import { escrowAuthority, escrowTokenAccount, rpc, trollMint } from "./escrowVer
 import { loadEnv } from "../env";
 
 /**
+ * Platform fee recipient wallet.
+ *
+ * Resolution order:
+ *   1. PLATFORM_FEE_WALLET env var (lets you rotate without code changes)
+ *   2. Hardcoded fallback (user-specified production wallet)
+ *
+ * The hardcoded fallback is intentional — it means a brand-new deploy
+ * with no env vars set still routes fees correctly.  Set the env var
+ * only if/when you want to redirect fees to a different wallet.
+ *
+ * Cached on first call to avoid repeating PublicKey construction on
+ * every withdrawal.
+ */
+const PLATFORM_FEE_WALLET_FALLBACK = "7KwQDkHVKGJ5BQ89JN83XeG1kvWdFHhf7QH5o67jiym4";
+let _platformFeeWallet: PublicKey | null = null;
+function platformFeeWallet(): PublicKey {
+  if (_platformFeeWallet) return _platformFeeWallet;
+  const fromEnv = (process.env.PLATFORM_FEE_WALLET ?? "").trim();
+  const addr = fromEnv || PLATFORM_FEE_WALLET_FALLBACK;
+  try {
+    _platformFeeWallet = new PublicKey(addr);
+  } catch (err) {
+    throw new Error(
+      `[payout] PLATFORM_FEE_WALLET is invalid (${addr}): ${(err as Error).message}`,
+    );
+  }
+  console.info(
+    `[payout] platform-fee-wallet=${_platformFeeWallet.toBase58()} ` +
+      `source=${fromEnv ? "env" : "fallback"}`,
+  );
+  return _platformFeeWallet;
+}
+
+/**
  * Send a payout / refund / exit transfer from the escrow ATA to a recipient wallet.
  *
  * AUDIT FIX (CRITICAL): the previous implementation read the row's status, decided
@@ -114,6 +148,7 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
 
     const tx = new Transaction();
     tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }));
+    // 1) User payout — net of fee.
     tx.add(
       SystemProgram.transfer({
         fromPubkey: authority.publicKey,
@@ -121,6 +156,18 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
         lamports: Number(netLamports), // SystemProgram.transfer takes number not bigint
       }),
     );
+    // 2) Platform fee — second transfer in the SAME tx so it's atomic.
+    //    Either both transfers land on chain, or neither does.  No
+    //    "user got paid but fee didn't" partial state possible.
+    if (feeLamports > 0n) {
+      tx.add(
+        SystemProgram.transfer({
+          fromPubkey: authority.publicKey,
+          toPubkey: platformFeeWallet(),
+          lamports: Number(feeLamports),
+        }),
+      );
+    }
     tx.feePayer = authority.publicKey;
 
     let signature: string;
@@ -197,7 +244,30 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
     );
   }
 
-  // The actual transfer — transferRaw is gross minus the v21 platform fee.
+  // v25: also resolve & ensure the platform-fee wallet's TROLL ATA exists
+  // — needed because the second SPL transfer below sends the fee there.
+  const feeWalletPk = platformFeeWallet();
+  const feeWalletAta = getAssociatedTokenAddressSync(mint, feeWalletPk);
+  let feeAtaNeedsCreate = false;
+  if (feeRaw > 0n) {
+    try {
+      await getAccount(conn, feeWalletAta);
+    } catch {
+      feeAtaNeedsCreate = true;
+    }
+    if (feeAtaNeedsCreate) {
+      tx.add(
+        createAssociatedTokenAccountInstruction(
+          authority.publicKey,
+          feeWalletAta,
+          feeWalletPk,
+          mint,
+        ),
+      );
+    }
+  }
+
+  // 1) User payout — net of fee.
   tx.add(
     createTransferCheckedInstruction(
       escrowAta,
@@ -208,6 +278,19 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
       decimals,
     ),
   );
+  // 2) Platform fee — second SPL transfer in the SAME tx (atomic).
+  if (feeRaw > 0n) {
+    tx.add(
+      createTransferCheckedInstruction(
+        escrowAta,
+        mint,
+        feeWalletAta,
+        authority.publicKey,
+        feeRaw,
+        decimals,
+      ),
+    );
+  }
 
   tx.feePayer = authority.publicKey;
 
