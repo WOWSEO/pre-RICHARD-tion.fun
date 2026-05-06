@@ -57,7 +57,12 @@ export function MarketCard({ market }: { market: MarketSummary }) {
               {expired ? "00:00:00" : `${hh}:${mm}:${ss}`}
             </p>
           ) : (
-            <p className="font-display text-sm font-semibold capitalize text-ink-200">{status}</p>
+            // v20: never show the raw "locked" word.  Same translation as
+            // StatusBadge above — internal `locked` is a brief
+            // post-closeAt settlement window; users see "Closed".
+            <p className="font-display text-sm font-semibold text-ink-200">
+              {userFacingStatus(status)}
+            </p>
           )}
         </div>
         <div className="text-right">
@@ -107,9 +112,15 @@ function SchedulePill({ scheduleType }: { scheduleType: MarketSummary["scheduleT
 }
 
 function StatusBadge({ status }: { status: MarketSummary["status"] }) {
+  // v20 product rule: users never see the word "Locked".  Internally a
+  // market sits in status="locked" between closeAt and the settlement
+  // window's end (windowSeconds/2 long — 30s for 15m markets, 1m30s for
+  // hourly, 7m30s for daily) while the engine collects close-time
+  // snapshots.  That's correct lifecycle, but to users it's just
+  // "closed" — no longer enterable, awaiting settlement.
   const map: Record<MarketSummary["status"], { label: string; cls: string }> = {
     open:     { label: "OPEN",     cls: "bg-yes/20 text-yes-deep ring-yes/30" },
-    locked:   { label: "LOCKED",   cls: "bg-cyber-amber/20 text-cyber-amber ring-cyber-amber/30" },
+    locked:   { label: "CLOSED",   cls: "bg-cyber-amber/20 text-cyber-amber ring-cyber-amber/30" },
     settling: { label: "SETTLING", cls: "bg-cyber-cyan/20 text-cyber-cyan ring-cyber-cyan/30" },
     settled:  { label: "SETTLED",  cls: "bg-ink-200/15 text-ink-200 ring-ink-200/15" },
     voided:   { label: "VOIDED",   cls: "bg-no/15 text-no-deep ring-no/30" },
@@ -153,4 +164,27 @@ function formatCloseLabel(d: Date): string {
     minute: "2-digit",
     hour12: true,
   });
+}
+
+/**
+ * Map internal market.status enum to the user-facing label.
+ *
+ * Product rule (v20): users never see the word "Locked".  The `locked`
+ * lifecycle status is a brief post-closeAt window during which the brain
+ * is still collecting close-time snapshots — to users that's just "Closed."
+ *
+ *   open     → "Open"
+ *   locked   → "Closed"      ← the only translation that matters here
+ *   settling → "Settling"
+ *   settled  → "Settled"
+ *   voided   → "Voided"
+ */
+function userFacingStatus(status: MarketSummary["status"]): string {
+  switch (status) {
+    case "open":     return "Open";
+    case "locked":   return "Closed";
+    case "settling": return "Settling";
+    case "settled":  return "Settled";
+    case "voided":   return "Voided";
+  }
 }

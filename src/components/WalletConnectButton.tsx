@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { TrollBalancePill } from "./TrollBalancePill";
+import { WalletBalancesPill } from "./WalletBalancesPill";
 import { shortenAddress } from "../services/trollBalance";
 
 /**
@@ -46,7 +46,7 @@ export function WalletConnectButton() {
     const addr = publicKey.toBase58();
     return (
       <div className="flex items-center gap-1.5">
-        <TrollBalancePill />
+        <WalletBalancesPill />
         <button
           onClick={onClick}
           className="group inline-flex items-center gap-2 rounded-full bg-ink-200/80 px-3 py-2 text-xs font-mono text-cream-100 ring-1 ring-cream-100/15 backdrop-blur-md transition hover:ring-no/60"

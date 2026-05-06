@@ -87,6 +87,12 @@ export interface EscrowDepositRow {
   market_id: string;
   wallet: string;
   amount_troll: string;
+  /** v23 — currency the user actually deposited. */
+  currency: "troll" | "sol";
+  /** v23 — SOL-equivalent value at entry, pinned for settlement payout.
+   *  Always populated for v23+ rows; null for pre-v23 legacy rows
+   *  (which were all TROLL anyway, so amount_troll is the right value). */
+  amount_sol_equiv: string | null;
   status: "pending" | "confirmed" | "failed";
   failure_reason: string | null;
   side: "YES" | "NO";
@@ -101,6 +107,10 @@ export interface EscrowWithdrawalRow {
   market_id: string;
   wallet: string;
   amount_troll: string;
+  /** v23 — currency this withdrawal pays out.  v23+ withdrawals are
+   *  always 'sol'; legacy 'troll' rows continue to be sent as SPL
+   *  transfers by the payout engine for backward compat. */
+  currency: "troll" | "sol";
   reason: "exit" | "payout" | "refund";
   status: "pending" | "sent" | "confirmed" | "failed";
   signature: string | null;

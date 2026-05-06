@@ -90,7 +90,7 @@ export function MarketPage() {
               <Stat label="Open Interest" value={market.openInterest.toFixed(0)} suffix="$TROLL" />
               <Stat label="qYES" value={market.yesLiquidity.toFixed(0)} mono />
               <Stat label="qNO" value={market.noLiquidity.toFixed(0)} mono />
-              <Stat label="Status" value={market.status} mono uppercase />
+              <Stat label="Status" value={market.status === "locked" ? "closed" : market.status} mono uppercase />
             </div>
 
             {/* User positions */}

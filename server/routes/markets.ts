@@ -4,7 +4,8 @@ import { assembleMarket, loadMarket, syncMarket, OptimisticLockConflict } from "
 import { quoteBuyYes, quoteBuyNo } from "../../src/market/pricingEngine";
 import { buyYes, buyNo } from "../../src/market/tradeEngine";
 import { isTradingAllowed, tick } from "../../src/market/scheduler";
-import { verifyDeposit, escrowTokenAccount } from "../services/escrowVerifier";
+import { verifyDeposit, verifySolDeposit, escrowTokenAccount, escrowAuthority } from "../services/escrowVerifier";
+import { convertToSolEquivalent } from "../services/currencyConverter";
 import type { Market, Side } from "../../src/market/marketTypes";
 
 export const marketsRouter = Router();
@@ -29,6 +30,8 @@ marketsRouter.get("/", async (_req, res, next) => {
     res.json({
       markets: (data ?? []).map(rowToSummary),
       escrowAccount: escrowTokenAccount().toBase58(),
+      // v23: native SOL escrow = authority pubkey itself.
+      escrowSolAccount: escrowAuthority().publicKey.toBase58(),
     });
   } catch (err) {
     next(err);
@@ -49,6 +52,7 @@ marketsRouter.get("/:id", async (req, res, next) => {
     res.json({
       market: marketToWire(market),
       escrowAccount: escrowTokenAccount().toBase58(),
+      escrowSolAccount: escrowAuthority().publicKey.toBase58(),
     });
   } catch (err) {
     next(err);
@@ -62,12 +66,20 @@ marketsRouter.get("/:id", async (req, res, next) => {
 /* ========================================================================== */
 marketsRouter.post("/:id/quote", async (req, res, next) => {
   try {
-    const { side, amountTroll } = req.body as { side?: Side; amountTroll?: number };
+    // v23: accept either {currency, amount} (new) or legacy {amountTroll}.
+    const body = req.body as {
+      side?: Side;
+      amountTroll?: number;
+      amount?: number;
+      currency?: "troll" | "sol";
+    };
+    const { side } = body;
     if (side !== "YES" && side !== "NO") {
       return res.status(400).json({ error: "invalid_side" });
     }
-    const amt = Number(amountTroll);
-    if (!Number.isFinite(amt) || amt <= 0) {
+    const inputCurrency: "troll" | "sol" = body.currency === "sol" ? "sol" : "troll";
+    const amountInput = Number(body.amount ?? body.amountTroll);
+    if (!Number.isFinite(amountInput) || amountInput <= 0) {
       return res.status(400).json({ error: "invalid_amount" });
     }
 
@@ -78,8 +90,30 @@ marketsRouter.post("/:id/quote", async (req, res, next) => {
       return res.status(409).json({ error: "market_not_tradable", status: market.status });
     }
 
-    const quote = side === "YES" ? quoteBuyYes(market, amt) : quoteBuyNo(market, amt);
-    res.json({ quote });
+    // Convert to canonical SOL-equivalent — brain operates in this unit.
+    let conv;
+    try {
+      conv = await convertToSolEquivalent(amountInput, inputCurrency);
+    } catch (err) {
+      return res.status(503).json({ error: "price_feed_unavailable", message: (err as Error).message });
+    }
+
+    const quote = side === "YES"
+      ? quoteBuyYes(market, conv.amountSolEquiv)
+      : quoteBuyNo(market, conv.amountSolEquiv);
+
+    res.json({
+      quote,
+      // Echo the conversion so the UI can confirm what it'll cost in the
+      // user's chosen currency vs. the canonical SOL-equivalent.
+      conversion: {
+        inputCurrency: conv.inputCurrency,
+        amountInput: conv.amountInput,
+        amountSolEquiv: conv.amountSolEquiv,
+        trollPriceUsd: conv.trollPriceUsd,
+        solPriceUsd: conv.solPriceUsd,
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -103,22 +137,28 @@ marketsRouter.post("/:id/enter", async (req, res, next) => {
     const body = req.body as {
       wallet?: string;
       side?: Side;
+      // v23: legacy "amountTroll" kept for backwards compat with old clients;
+      // new clients send {currency, amount}.
       amountTroll?: number;
+      amount?: number;
+      currency?: "troll" | "sol";
       signature?: string;
     };
-    const { wallet, side, amountTroll, signature } = body;
+    const { wallet, side, signature } = body;
     if (!wallet || (side !== "YES" && side !== "NO") || !signature) {
       return res.status(400).json({ error: "invalid_request" });
     }
-    const amt = Number(amountTroll);
-    if (!Number.isFinite(amt) || amt <= 0) {
+    const inputCurrency: "troll" | "sol" = body.currency === "sol" ? "sol" : "troll";
+    const amountInput = Number(body.amount ?? body.amountTroll);
+    if (!Number.isFinite(amountInput) || amountInput <= 0) {
       return res.status(400).json({ error: "invalid_amount" });
     }
 
     const startedAt = Date.now();
     const shortSig = `${signature.slice(0, 8)}…${signature.slice(-6)}`;
     console.info(
-      `[entry] BEGIN market=${req.params.id} wallet=${wallet} side=${side} amt=${amt} sig=${shortSig}`,
+      `[entry] BEGIN market=${req.params.id} wallet=${wallet} side=${side} ` +
+        `currency=${inputCurrency} amt=${amountInput} sig=${shortSig}`,
     );
 
     // 1) Reject duplicate signature submissions early
@@ -138,45 +178,89 @@ marketsRouter.post("/:id/enter", async (req, res, next) => {
       });
     }
 
-    // 2) Ensure user row exists (positions/trades have FK to users.wallet)
+    // 2) Ensure user row exists
     await sb.from("users").upsert({ wallet, last_seen_at: new Date().toISOString() }, { onConflict: "wallet" });
 
-    // 3) Insert deposit row as 'pending' — protected by UNIQUE(signature)
+    // 3) Convert to canonical SOL-equivalent (brain math operates in this unit).
+    let conv;
+    try {
+      conv = await convertToSolEquivalent(amountInput, inputCurrency);
+    } catch (err) {
+      return res.status(503).json({ error: "price_feed_unavailable", message: (err as Error).message });
+    }
+    const solEquiv = conv.amountSolEquiv;
+
+    // 4) Insert deposit row as 'pending' with currency + sol-equivalent.
+    //    Note: amount_troll is overloaded — for SOL deposits it stores the
+    //    SOL amount (= sol_equivalent), for TROLL deposits it stores the
+    //    TROLL amount (and amount_sol_equiv carries the SOL conversion).
     const { data: deposit, error: depErr } = await sb
       .from("escrow_deposits")
       .insert({
         signature,
         market_id: req.params.id!,
         wallet,
-        amount_troll: amt.toString(),
+        amount_troll: inputCurrency === "sol" ? solEquiv.toString() : amountInput.toString(),
+        amount_sol_equiv: solEquiv.toString(),
+        currency: inputCurrency,
         status: "pending",
         side,
       })
       .select("id")
       .single<{ id: number }>();
     if (depErr) throw depErr;
-    console.info(`[entry] deposit-row-inserted id=${deposit.id} sig=${shortSig}`);
+    console.info(
+      `[entry] deposit-row-inserted id=${deposit.id} sig=${shortSig} ` +
+        `solEquiv=${solEquiv}`,
+    );
 
-    // 4) Verify the on-chain transfer
-    console.info(`[entry] verifying-on-chain sig=${shortSig}`);
-    const result = await verifyDeposit({
-      signature,
-      expectedSource: wallet,
-      expectedAmountTroll: amt,
-    });
+    // 5) Verify on-chain — dispatch by currency.
+    console.info(`[entry] verifying-on-chain sig=${shortSig} currency=${inputCurrency}`);
+    let verifyOk = false;
+    let verifyReason: string | null = null;
+    let verifiedSolEquiv = solEquiv; // what brain ultimately sees
+    if (inputCurrency === "sol") {
+      const r = await verifySolDeposit({
+        signature,
+        expectedSource: wallet,
+        expectedAmountSol: amountInput,
+      });
+      verifyOk = r.ok;
+      verifyReason = r.reason;
+      // SOL deposit verified for `actualAmountSol` SOL — that IS the
+      // sol-equivalent (1:1).  Use the on-chain verified amount in case
+      // it differs slightly from the requested amount.
+      if (r.ok) verifiedSolEquiv = r.actualAmountSol;
+    } else {
+      const r = await verifyDeposit({
+        signature,
+        expectedSource: wallet,
+        expectedAmountTroll: amountInput,
+      });
+      verifyOk = r.ok;
+      verifyReason = r.reason;
+      // For TROLL deposits, the verified amount is in TROLL.  Re-convert
+      // to keep consistency, but we keep the conv.amountSolEquiv we
+      // already computed (entry-time price is what's pinned).
+      if (r.ok && Math.abs(r.actualAmountTroll - amountInput) > 0.001) {
+        // tiny rounding — recalculate sol_equivalent from on-chain amt
+        verifiedSolEquiv = (r.actualAmountTroll * conv.trollPriceUsd) / conv.solPriceUsd;
+      }
+    }
 
-    if (!result.ok) {
+    if (!verifyOk) {
       console.warn(
-        `[entry] verification-FAILED depositId=${deposit.id} sig=${shortSig} reason=${result.reason}`,
+        `[entry] verification-FAILED depositId=${deposit.id} sig=${shortSig} reason=${verifyReason}`,
       );
       await sb
         .from("escrow_deposits")
-        .update({ status: "failed", failure_reason: result.reason })
+        .update({ status: "failed", failure_reason: verifyReason })
         .eq("id", deposit.id);
-      return res.status(422).json({ error: "deposit_verification_failed", reason: result.reason });
+      return res.status(422).json({ error: "deposit_verification_failed", reason: verifyReason });
     }
     console.info(
-      `[entry] verification-OK depositId=${deposit.id} sig=${shortSig} actualAmt=${result.actualAmountTroll}`,
+      `[entry] verification-OK depositId=${deposit.id} sig=${shortSig} ` +
+        `solEquiv=${verifiedSolEquiv}`,
     );
 
     // 5) Retry loop: load → brain → sync.  On lock conflict, reload and try again.
@@ -220,11 +304,13 @@ marketsRouter.post("/:id/enter", async (req, res, next) => {
           market.positions.map((p) => [p.id, structuredClone(p)]),
         );
 
-        // Run brain mutation
+        // Run brain mutation on the canonical SOL-equivalent (v23).  The
+        // ledger column "amount_troll" overloaded as the unit-agnostic
+        // amount is also that same SOL-equivalent value.
         const ensureUser = { wallet, trollBalance: 0 };
         const receipt = side === "YES"
-          ? buyYes(ensureUser, market, result.actualAmountTroll)
-          : buyNo(ensureUser, market, result.actualAmountTroll);
+          ? buyYes(ensureUser, market, verifiedSolEquiv)
+          : buyNo(ensureUser, market, verifiedSolEquiv);
 
         const newTrades = market.trades.filter((t) => !tradeIdsBefore.has(t.id));
         const touchedPositions = market.positions.filter((p) => {

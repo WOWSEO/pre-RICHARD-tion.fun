@@ -11,10 +11,11 @@ import { TrollPage } from "./pages/TrollPage";
 import { ClaimsPage } from "./pages/ClaimsPage";
 import { useServerMarkets, useUserWithdrawals } from "./hooks/useServerMarkets";
 import { useTrollBalance } from "./hooks/useTrollBalance";
+import { useSolBalance } from "./hooks/useSolBalance";
 import { useShortCountdown } from "./hooks/useShortCountdown";
 import { api, type MarketSummary } from "./services/apiClient";
 import { pickPanelMarkets } from "./services/marketSelection";
-import { depositToEscrow, getTrollDecimals } from "./services/escrow";
+import { depositToEscrow, depositSolToEscrow, getTrollDecimals } from "./services/escrow";
 import { formatTrollBalance } from "./services/trollBalance";
 import type { Side, TradeQuote, ScheduleType } from "./market/marketTypes";
 
@@ -271,7 +272,7 @@ function ClassicHome() {
   const chartUrl = useMemo(getDexScreenerEmbedUrl, []);
 
   // Real backend markets.  Polled every 5 s by useServerMarkets.
-  const { markets: allMarkets, escrowAccount, error: marketsError } = useServerMarkets();
+  const { markets: allMarkets, escrowAccount, escrowSolAccount, error: marketsError } = useServerMarkets();
   // Always exactly 3 slots — one per schedule_type — possibly null/settling.
   const slots = useMemo(() => buildPanelSlots(allMarkets), [allMarkets]);
   // Convenience: tradable (status=active) market list, in slot order.
@@ -285,6 +286,11 @@ function ClassicHome() {
   const { connection } = useConnection();
   const { setVisible: openWalletModal } = useWalletModal();
   const balance = useTrollBalance();
+  // v23: parallel SOL balance + currency selector.  The currency state
+  // controls which token the user is BETTING WITH.  Payouts always come
+  // back in SOL regardless of which currency the user picked here.
+  const solBalance = useSolBalance();
+  const [currency, setCurrency] = useState<"troll" | "sol">("troll");
   const walletAddr = wallet.publicKey?.toBase58() ?? null;
 
   // Wallet pending withdrawals — drives the conditional "Payouts (N)" nav pill.
@@ -389,12 +395,17 @@ function ClassicHome() {
   const headlineCountdown = useShortCountdown(selected ? new Date(selected.closeAt) : null);
 
   const onMax = () => {
-    if (balance.balance != null && balance.balance > 0) {
+    if (currency === "sol") {
+      // Leave ~0.005 SOL for tx fees + any rent buffer.  SOL is reported
+      // with 3 decimals on display, so we round down to 3 decimal places.
+      const b = solBalance.balance ?? 0;
+      const headroom = 0.005;
+      const usable = Math.max(0, b - headroom);
+      const v = Math.floor(usable * 1000) / 1000;
+      if (v > 0) setAmountStr(v.toString());
+    } else if (balance.balance != null && balance.balance > 0) {
       const v = Math.floor(balance.balance);
-      console.info(`[entry/max] click balance=${balance.balance} fillingTo=${v}`);
       setAmountStr(v.toString());
-    } else {
-      console.info("[entry/max] click skipped — no balance");
     }
   };
 
@@ -404,13 +415,7 @@ function ClassicHome() {
       return;
     }
     if (!wallet.connected || !wallet.publicKey) {
-      // Open the wallet modal instead of erroring — this is the most common
-      // path for a brand-new visitor on the landing page.
       openWalletModal(true);
-      return;
-    }
-    if (!escrowAccount) {
-      setPhase({ kind: "error", message: "Server hasn't reported an escrow account yet." });
       return;
     }
     if (!tradable) {
@@ -418,66 +423,88 @@ function ClassicHome() {
       return;
     }
     if (amount <= 0) {
-      setPhase({ kind: "error", message: "Enter a $TROLL amount." });
-      return;
-    }
-    if (balance.balance != null && amount > balance.balance) {
-      setPhase({
-        kind: "error",
-        message: `You only have ${formatTrollBalance(balance.balance)} $TROLL.`,
-      });
+      setPhase({ kind: "error", message: `Enter a${currency === "sol" ? " SOL" : " $TROLL"} amount.` });
       return;
     }
 
-    const mintStr = import.meta.env.VITE_TROLL_MINT?.trim();
-    if (!mintStr) {
-      setPhase({ kind: "error", message: "VITE_TROLL_MINT is not configured." });
-      return;
+    // v23: balance + escrow checks dispatched by currency.
+    if (currency === "sol") {
+      if (!escrowSolAccount) {
+        setPhase({ kind: "error", message: "Server hasn't reported a SOL escrow account yet." });
+        return;
+      }
+      if (solBalance.balance != null && amount > solBalance.balance) {
+        setPhase({ kind: "error", message: `You only have ${solBalance.balance.toFixed(3)} SOL.` });
+        return;
+      }
+    } else {
+      if (!escrowAccount) {
+        setPhase({ kind: "error", message: "Server hasn't reported an escrow account yet." });
+        return;
+      }
+      if (balance.balance != null && amount > balance.balance) {
+        setPhase({ kind: "error", message: `You only have ${formatTrollBalance(balance.balance)} $TROLL.` });
+        return;
+      }
     }
 
     try {
       console.info(
-        `[entry/sign] BEGIN market=${selected.id} side=${side} amount=${amount} ` +
+        `[entry/sign] BEGIN market=${selected.id} side=${side} currency=${currency} amount=${amount} ` +
           `wallet=${wallet.publicKey.toBase58()}`,
       );
 
       // 1) Get a fresh quote (best price right before signing).
       setPhase({ kind: "quoting" });
-      console.info(`[entry/sign] step1-quote market=${selected.id}`);
-      const { quote } = await api.quote(selected.id, side, amount);
+      const { quote } = await api.quote(selected.id, side, amount, currency);
       console.info(
         `[entry/sign] quote-ok shares=${quote.shares.toFixed(2)} avg=${quote.avgPriceCents.toFixed(1)}c`,
       );
       void quote;
 
-      // 2) Build + sign + broadcast the SPL transfer.
+      // 2) Build + sign + broadcast — currency-specific tx.
       setPhase({ kind: "signing" });
-      const trollMint = new PublicKey(mintStr);
-      const escrowAta = new PublicKey(escrowAccount);
-      console.info(`[entry/sign] step2-build trollMint=${mintStr} escrowAta=${escrowAccount}`);
-      const decimals = await getTrollDecimals(connection, trollMint);
-      console.info(`[entry/sign] decimals=${decimals}`);
-
-      setPhase({ kind: "broadcasting" });
-      console.info("[entry/sign] step3-phantom-sign-and-broadcast");
-      const signature = await depositToEscrow({
-        wallet,
-        connection,
-        trollMint,
-        escrowTokenAccount: escrowAta,
-        amountUi: amount,
-        decimals,
-      });
+      let signature: string;
+      if (currency === "sol") {
+        const escrowSolPk = new PublicKey(escrowSolAccount!);
+        console.info(`[entry/sign] sol-build escrowSolAccount=${escrowSolAccount}`);
+        setPhase({ kind: "broadcasting" });
+        signature = await depositSolToEscrow({
+          wallet,
+          connection,
+          escrowSolAccount: escrowSolPk,
+          amountUiSol: amount,
+        });
+      } else {
+        const mintStr = import.meta.env.VITE_TROLL_MINT?.trim();
+        if (!mintStr) {
+          setPhase({ kind: "error", message: "VITE_TROLL_MINT is not configured." });
+          return;
+        }
+        const trollMint = new PublicKey(mintStr);
+        const escrowAta = new PublicKey(escrowAccount!);
+        const decimals = await getTrollDecimals(connection, trollMint);
+        console.info(`[entry/sign] troll-build decimals=${decimals}`);
+        setPhase({ kind: "broadcasting" });
+        signature = await depositToEscrow({
+          wallet,
+          connection,
+          trollMint,
+          escrowTokenAccount: escrowAta,
+          amountUi: amount,
+          decimals,
+        });
+      }
       const shortSig = `${signature.slice(0, 8)}…${signature.slice(-6)}`;
       console.info(`[entry/sign] broadcast-ok sig=${shortSig}`);
 
       // 3) Server verifies on-chain THEN books the position.
       setPhase({ kind: "verifying" });
-      console.info(`[entry/sign] step4-server-verify sig=${shortSig}`);
       const result = await api.enter(selected.id, {
         wallet: wallet.publicKey.toBase58(),
         side,
-        amountTroll: amount,
+        amount,
+        currency,
         signature,
       });
       console.info(
@@ -486,8 +513,6 @@ function ClassicHome() {
 
       setPhase({ kind: "ok", positionId: result.positionId });
       setAmountStr("");
-      // Brief pause so the user sees the success state, then route them
-      // to their position page.
       window.setTimeout(() => navigate(`/market/${selected.id}`), 1500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Sign-in failed";
@@ -541,21 +566,11 @@ function ClassicHome() {
         <nav className="classic-nav">
           <Brand />
           <div className="classic-actions">
-            <button className="classic-nav-pill" onClick={() => document.getElementById("coin-of-day")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
-              Coin of the Day
-            </button>
-            <button className="classic-nav-pill" onClick={() => document.getElementById("predict-panel")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
-              Predict
-            </button>
-            {wallet.connected && (
-              <button
-                className="classic-nav-pill"
-                onClick={() => navigate("/claims")}
-                title="View pending and confirmed payouts"
-              >
-                Payouts{pendingClaimCount > 0 ? ` (${pendingClaimCount})` : ""}
-              </button>
-            )}
+            {/* v21: only the Connect button + balance pills.  All scroll-
+                target nav (Coin of the Day, Predict, Payouts) is removed
+                — the whole flow fits on one desktop viewport without
+                scrolling, so there's nothing to navigate to.  Pending
+                payouts get a small badge inline elsewhere. */}
             <WalletConnectButton />
           </div>
         </nav>
@@ -567,14 +582,21 @@ function ClassicHome() {
             <p className="classic-subcopy">
               Connect your wallet, show your $TROLL balance, pick YES or NO, and sign your $TROLL entry. Markets are real, escrowed on-chain, and settled by oracle median.
             </p>
-            <div className="classic-cta-row">
-              <button className="classic-primary" onClick={() => document.getElementById("predict-panel")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
-                Predict $TROLL
-              </button>
-              <button className="classic-secondary" onClick={() => document.getElementById("coin-of-day")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
-                View chart
-              </button>
-            </div>
+            {/* v21: CTA row removed.  No off-screen targets to scroll to —
+                the predict panel is already in the same viewport. */}
+            {/* v22: tiny external chart link.  Live MC pill in the float
+                card already gives at-a-glance numbers; this link is for
+                power users who want the full DexScreener candlestick.
+                Opens in a new tab so it doesn't break the one-page flow. */}
+            <a
+              className="chart-link"
+              href={import.meta.env.VITE_DEXSCREENER_PAIR_URL || "https://dexscreener.com/solana/4w2cysotx6czaugmmwg13hdpy4qemg2czekyeqyk9ama"}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View live chart on DexScreener
+              <span aria-hidden> ↗</span>
+            </a>
           </div>
 
           {/* Live MC card — UNCHANGED from prior version. */}
@@ -606,7 +628,27 @@ function ClassicHome() {
                 <p className="classic-eyebrow">Predict</p>
                 <h2>{selected ? selected.question : "Loading market…"}</h2>
               </div>
-              <span className="timer-pill">{selected ? headlineCountdown : "—"}</span>
+              <div className="predict-head-right">
+                {/* v22: discoverable /claims link.  Only renders when the
+                    user has pending payouts — auto-payout normally drains
+                    these within a few seconds of settle, but a row that
+                    fails on-chain (RPC flake, missing ATA pre-creation)
+                    sits as pending until it's retried.  This badge gives
+                    users a way to see/claim such rows without us cluttering
+                    the header on the no-pending case. */}
+                {wallet.connected && pendingClaimCount > 0 && (
+                  <button
+                    type="button"
+                    className="claims-pill"
+                    onClick={() => navigate("/claims")}
+                    title="View pending payouts"
+                  >
+                    <span aria-hidden className="claims-dot" />
+                    {pendingClaimCount} payout{pendingClaimCount === 1 ? "" : "s"}
+                  </button>
+                )}
+                <span className="timer-pill">{selected ? headlineCountdown : "—"}</span>
+              </div>
             </div>
 
             <div className="market-options">
@@ -662,8 +704,31 @@ function ClassicHome() {
               </button>
             </div>
 
+            {/* v23 currency toggle — TROLL or SOL.  Same odds either way;
+                payouts always come back in SOL regardless of pick. */}
+            <div className="currency-toggle" role="tablist" aria-label="Bet currency">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={currency === "troll"}
+                className={currency === "troll" ? "active" : ""}
+                onClick={() => { setCurrency("troll"); setAmountStr(""); setPhase({ kind: "idle" }); }}
+              >
+                $TROLL
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={currency === "sol"}
+                className={currency === "sol" ? "active" : ""}
+                onClick={() => { setCurrency("sol"); setAmountStr(""); setPhase({ kind: "idle" }); }}
+              >
+                SOL
+              </button>
+            </div>
+
             <label className="amount-label" htmlFor="amount">
-              How many $TROLL do you want to put up?
+              How much {currency === "sol" ? "SOL" : "$TROLL"} do you want to put up?
             </label>
             <div className="amount-row">
               <input
@@ -674,7 +739,11 @@ function ClassicHome() {
                 onChange={(e) => setAmountStr(e.target.value)}
                 disabled={!tradable}
               />
-              <button type="button" onClick={onMax} disabled={!balance.balance}>
+              <button
+                type="button"
+                onClick={onMax}
+                disabled={currency === "sol" ? !solBalance.balance : !balance.balance}
+              >
                 MAX
               </button>
             </div>
@@ -693,7 +762,11 @@ function ClassicHome() {
               </span>
               <span>
                 Wallet balance{" "}
-                <b>{balance.balance != null ? formatTrollBalance(balance.balance) : "--"}</b>
+                <b>
+                  {currency === "sol"
+                    ? (solBalance.balance != null ? `${solBalance.balance.toFixed(3)} SOL` : "--")
+                    : (balance.balance != null ? `${formatTrollBalance(balance.balance)} $TROLL` : "--")}
+                </b>
               </span>
               {phase.kind === "error" && (
                 <span style={{ color: "#9c1232" }}>
@@ -713,17 +786,12 @@ function ClassicHome() {
           </aside>
         </section>
 
-        {/* Coin of the Day chart — UNCHANGED. Same DexScreener iframe URL. */}
-        <section className="coin-day-section" id="coin-of-day" aria-label="Coin of the Day live chart">
-          <div className="coin-day-copy">
-            <p className="classic-eyebrow">Coin of the Day</p>
-            <h2>$TROLL live chart</h2>
-            <p>Embedded on the landing page. The black MC card uses the same pair source and refreshes every 2 seconds.</p>
-          </div>
-          <div className="coin-day-chart">
-            <iframe title="$TROLL DexScreener live chart" src={chartUrl} allow="clipboard-write" />
-          </div>
-        </section>
+        {/* v21: coin-day section removed.  The black MC card in the hero
+            still shows live $TROLL MC, which is enough top-of-funnel
+            context for a one-page experience.  The DexScreener chart
+            iframe was the largest off-screen scroll target — by
+            dropping it we get the whole flow into one desktop
+            viewport without scrolling. */}
       </div>
     </main>
   );

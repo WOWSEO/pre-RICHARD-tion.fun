@@ -8,12 +8,15 @@ import { api, type MarketDetail, type MarketSummary, type WireWithdrawal } from 
 export function useServerMarkets(intervalMs = 5_000): {
   markets: MarketSummary[];
   escrowAccount: string | null;
+  /** v23: native SOL escrow address (= authority pubkey).  null until first poll. */
+  escrowSolAccount: string | null;
   loading: boolean;
   error: string | null;
   refresh: () => void;
 } {
   const [markets, setMarkets] = useState<MarketSummary[]>([]);
   const [escrowAccount, setEscrowAccount] = useState<string | null>(null);
+  const [escrowSolAccount, setEscrowSolAccount] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -28,6 +31,7 @@ export function useServerMarkets(intervalMs = 5_000): {
         if (cancelled) return;
         setMarkets(data.markets);
         setEscrowAccount(data.escrowAccount);
+        if (data.escrowSolAccount) setEscrowSolAccount(data.escrowSolAccount);
         setError(null);
       } catch (err) {
         if (cancelled) return;
@@ -48,7 +52,7 @@ export function useServerMarkets(intervalMs = 5_000): {
   }, [intervalMs, tick]);
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
-  return { markets, escrowAccount, loading, error, refresh };
+  return { markets, escrowAccount, escrowSolAccount, loading, error, refresh };
 }
 
 /** Fetches a single market on a poll, with the embedded positions and trades. */

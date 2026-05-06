@@ -273,3 +273,116 @@ async function tokenDecimals(mint: PublicKey): Promise<number> {
   _decimalsCache = supply.value.decimals;
   return _decimalsCache;
 }
+
+/* ========================================================================== */
+/* SOL deposit verification (v23)                                              */
+/* ========================================================================== */
+
+export interface VerifySolDepositInput {
+  signature: string;
+  expectedSource: string;       // user wallet (base58)
+  expectedAmountSol: number;    // SOL UI amount (1 SOL = 1.0)
+  /** Tolerance in SOL — small rounding allowed. */
+  amountToleranceSol?: number;
+}
+
+export interface VerifySolDepositResult {
+  ok: boolean;
+  reason: string | null;
+  /** When ok=true, the actual UI amount transferred. */
+  actualAmountSol: number;
+}
+
+/**
+ * Verify a user's SOL escrow deposit on-chain.
+ *
+ * Checks (all must hold):
+ *   1. Transaction is found and not failed
+ *   2. Confirmation level meets DEPOSIT_CONFIRMATION
+ *   3. Contains a top-level SystemProgram `transfer` instruction
+ *   4. Destination = escrowAuthority().publicKey  (the system account
+ *      controlled by our escrow authority — we don't use a separate
+ *      keypair for SOL escrow; the same authority that signs SPL
+ *      transfers also signs SOL transfers)
+ *   5. Source = expectedSource (user wallet)
+ *   6. Lamports within tolerance of expectedAmountSol * LAMPORTS_PER_SOL
+ *
+ * Note: we deliberately ALLOW additional non-transfer instructions (e.g.
+ * a ComputeBudget setComputeUnitPrice) because a wallet may auto-add
+ * those.  We just need at least one matching transfer.
+ */
+export async function verifySolDeposit(
+  input: VerifySolDepositInput,
+): Promise<VerifySolDepositResult> {
+  const tolerance = input.amountToleranceSol ?? 0.000001;
+  const conn = rpc();
+  const authority = escrowAuthority();
+  const expectedDest = authority.publicKey.toBase58();
+  const expectedLamports = Math.round(input.expectedAmountSol * 1_000_000_000);
+
+  const shortSig = `${input.signature.slice(0, 8)}…${input.signature.slice(-6)}`;
+  console.info(
+    `[verify-sol] BEGIN sig=${shortSig} expectedSource=${input.expectedSource} ` +
+      `expectedAmt=${input.expectedAmountSol}`,
+  );
+
+  let expectedSourcePk: PublicKey;
+  try {
+    expectedSourcePk = new PublicKey(input.expectedSource);
+  } catch {
+    return { ok: false, reason: "invalid_expected_source_pubkey", actualAmountSol: 0 };
+  }
+  const expectedSrc = expectedSourcePk.toBase58();
+
+  let tx: ParsedTransactionWithMeta | null;
+  try {
+    const env = loadEnv();
+    const readCommitment = env.DEPOSIT_CONFIRMATION === "finalized" ? "finalized" : "confirmed";
+    tx = await conn.getParsedTransaction(input.signature, {
+      maxSupportedTransactionVersion: 0,
+      commitment: readCommitment,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `rpc_error: ${(err as Error).message}`,
+      actualAmountSol: 0,
+    };
+  }
+  if (!tx) {
+    return { ok: false, reason: "transaction_not_found", actualAmountSol: 0 };
+  }
+  if (tx.meta?.err) {
+    return { ok: false, reason: `tx_failed: ${JSON.stringify(tx.meta.err)}`, actualAmountSol: 0 };
+  }
+
+  // Walk top-level instructions for a SystemProgram.transfer matching our criteria.
+  const instructions = tx.transaction.message.instructions;
+  for (const ix of instructions) {
+    if (!("parsed" in ix)) continue;
+    if (ix.program !== "system") continue;
+    const parsed = ix.parsed as { type?: string; info?: { source?: string; destination?: string; lamports?: number } };
+    if (parsed.type !== "transfer") continue;
+    const info = parsed.info ?? {};
+    if (info.destination !== expectedDest) continue;
+    if (info.source !== expectedSrc) continue;
+    const lamports = Number(info.lamports ?? 0);
+    if (!(lamports > 0)) continue;
+    const sol = lamports / 1_000_000_000;
+    if (Math.abs(sol - input.expectedAmountSol) > tolerance) {
+      console.warn(
+        `[verify-sol] reject sig=${shortSig} reason=amount_mismatch ` +
+          `expected=${input.expectedAmountSol} got=${sol}`,
+      );
+      return {
+        ok: false,
+        reason: `amount_mismatch: expected ${input.expectedAmountSol} got ${sol}`,
+        actualAmountSol: sol,
+      };
+    }
+    console.info(`[verify-sol] OK sig=${shortSig} amount=${sol}`);
+    return { ok: true, reason: null, actualAmountSol: sol };
+  }
+
+  return { ok: false, reason: "no_matching_sol_transfer_found", actualAmountSol: 0 };
+}

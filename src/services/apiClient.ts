@@ -124,6 +124,8 @@ export interface WireWithdrawal {
 export interface MarketsListResponse {
   markets: MarketSummary[];
   escrowAccount: string;
+  /** v23: native SOL escrow address (= authority pubkey). */
+  escrowSolAccount?: string;
 }
 
 /* ========================================================================== */
@@ -136,17 +138,47 @@ export const api = {
   listMarkets: () => call<MarketsListResponse>("/markets"),
 
   getMarket: (id: string) =>
-    call<{ market: MarketDetail; escrowAccount: string }>(`/markets/${encodeURIComponent(id)}`),
+    call<{ market: MarketDetail; escrowAccount: string; escrowSolAccount?: string }>(
+      `/markets/${encodeURIComponent(id)}`,
+    ),
 
-  quote: (id: string, side: Side, amountTroll: number) =>
-    call<{ quote: TradeQuote }>(`/markets/${encodeURIComponent(id)}/quote`, {
+  /**
+   * v23: quote accepts currency.  Server returns the canonical SOL-equivalent
+   * pricing alongside the conversion details for UI display.  Legacy callers
+   * passing only amountTroll continue to work (server defaults currency='troll').
+   */
+  quote: (
+    id: string,
+    side: Side,
+    amount: number,
+    currency: "troll" | "sol" = "troll",
+  ) =>
+    call<{
+      quote: TradeQuote;
+      conversion?: {
+        inputCurrency: "troll" | "sol";
+        amountInput: number;
+        amountSolEquiv: number;
+        trollPriceUsd: number;
+        solPriceUsd: number;
+      };
+    }>(`/markets/${encodeURIComponent(id)}/quote`, {
       method: "POST",
-      body: JSON.stringify({ side, amountTroll }),
+      body: JSON.stringify({ side, amount, currency }),
     }),
 
   enter: (
     id: string,
-    args: { wallet: string; side: Side; amountTroll: number; signature: string },
+    args: {
+      wallet: string;
+      side: Side;
+      signature: string;
+      // v23: prefer {currency, amount}.  Legacy callers may still send
+      // amountTroll alone; server treats that as currency='troll'.
+      amount?: number;
+      currency?: "troll" | "sol";
+      amountTroll?: number;
+    },
   ) =>
     call<{
       ok: boolean;

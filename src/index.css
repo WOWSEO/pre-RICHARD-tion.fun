@@ -22,9 +22,13 @@ button, input { font: inherit; }
 
 .classic-page {
   position: relative;
-  min-height: 100vh;
+  /* v21 desktop one-page rule: hard 100vh cap with no scroll above the
+     mobile breakpoint.  Mobile (max-width: 1050px) flips back to
+     overflow-y: auto in the media block below — small viewports always
+     scroll because there's no viable single-screen layout. */
+  height: 100vh;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: hidden;
   color: var(--ink);
 }
 .classic-bg { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: saturate(1.12) contrast(1.06); z-index: 0; }
@@ -107,6 +111,17 @@ button, input { font: inherit; }
 .classic-eyebrow { margin: 0 0 18px; color: #006c3b; text-transform: uppercase; letter-spacing: .28em; font-weight: 950; font-size: 13px; }
 .classic-copy-card h1 { margin: 0; max-width: 570px; font-size: clamp(54px, 7vw, 96px); line-height: .84; letter-spacing: -0.085em; font-weight: 1000; color: #001a0d; }
 .classic-subcopy { margin: 28px 0 0; max-width: 520px; color: rgba(0, 28, 16, .72); font-size: 19px; line-height: 1.35; font-weight: 750; }
+/* v22 chart-link — small power-user shortcut to DexScreener.  Lives below
+   the subcopy so it doesn't compete for hierarchy with the big H1. */
+.chart-link {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 22px;
+  font-size: 13px; font-weight: 800; letter-spacing: .02em;
+  color: #006c3b; text-decoration: none;
+  border-bottom: 1px dashed rgba(0,108,59,.4);
+  padding-bottom: 1px; transition: color .12s, border-color .12s;
+}
+.chart-link:hover { color: #00ef61; border-bottom-color: #00ef61; }
 .classic-cta-row { display: flex; gap: 14px; margin-top: 32px; flex-wrap: wrap; }
 .classic-primary, .classic-secondary { border: 0; border-radius: 999px; padding: 15px 24px; font-weight: 950; cursor: pointer; text-decoration: none; }
 .classic-primary { background: #002413; color: #00ff69; box-shadow: 0 12px 30px rgba(0,0,0,.18); }
@@ -115,7 +130,29 @@ button, input { font: inherit; }
 .classic-predict-card { position: relative; z-index: 12; border-radius: 30px; padding: 28px; width: min(100%, 520px); justify-self: end; }
 .predict-head { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
 .predict-head h2 { margin: 0; font-size: 31px; letter-spacing: -0.055em; }
+.predict-head-right { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
 .timer-pill { background: #9be9b2; color: #002713; padding: 12px 16px; border-radius: 999px; font-weight: 950; white-space: nowrap; }
+/* v22 claims-pill: subtle outline pill with a pulsing yes-green dot.
+   Only renders when pendingClaimCount > 0, so it doesn't compete for
+   attention in the steady state. */
+.claims-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: rgba(0, 0, 0, .04); color: #002713;
+  border: 1px solid rgba(0, 26, 13, .15);
+  border-radius: 999px; padding: 6px 12px;
+  font-size: 11px; font-weight: 850; letter-spacing: .02em;
+  cursor: pointer; transition: background .12s ease;
+}
+.claims-pill:hover { background: rgba(0, 0, 0, .08); }
+.claims-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #00ef61; box-shadow: 0 0 0 2px rgba(0,239,97,.18);
+  animation: claims-dot-pulse 1.6s ease-in-out infinite;
+}
+@keyframes claims-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .55; transform: scale(.85); }
+}
 .market-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
 .market-option { text-align: left; color: #173326; border: 1px solid rgba(0,0,0,.08); border-radius: 17px; padding: 16px 12px; background: rgba(255,255,255,.34); cursor: pointer; min-height: 148px; }
 .market-option.active { background: rgba(113, 255, 145, .28); border: 3px solid rgba(0, 240, 96, .45); }
@@ -134,6 +171,24 @@ button, input { font: inherit; }
    when NO is active it pops with the same intensity as #00ef61 YES. */
 .no-side { background: #ff3d6f; color: #220006; }
 .amount-label { display: block; margin: 18px 0 8px; font-weight: 950; color: rgba(0, 28, 16, .72); }
+/* v23 currency toggle — segmented control between YES/NO row and amount input */
+.currency-toggle {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+  margin-top: 14px;
+  background: rgba(0, 28, 16, .08);
+  border-radius: 14px; padding: 4px;
+}
+.currency-toggle button {
+  border: 0; background: transparent; color: rgba(0, 28, 16, .60);
+  border-radius: 10px; padding: 9px 12px;
+  font-weight: 900; font-size: 12px; letter-spacing: .04em;
+  cursor: pointer; transition: background .12s, color .12s;
+}
+.currency-toggle button:hover { color: rgba(0, 28, 16, .85); }
+.currency-toggle button.active {
+  background: #001c10; color: #d8ffe7;
+  box-shadow: 0 2px 8px rgba(0,28,16,.18);
+}
 .amount-row { display: grid; grid-template-columns: 1fr 70px; gap: 10px; }
 .amount-row input, .amount-row button { border: 0; border-radius: 16px; padding: 18px; font-weight: 950; }
 .amount-row input { background: rgba(255,255,255,.55); color: #001c10; }

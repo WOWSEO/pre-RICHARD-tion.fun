@@ -1,8 +1,10 @@
 import {
   ComputeBudgetProgram,
   PublicKey,
+  SystemProgram,
   Transaction,
   sendAndConfirmTransaction,
+  LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
 import {
   createTransferCheckedInstruction,
@@ -56,19 +58,98 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
     .eq("id", withdrawalId)
     .eq("status", "pending")
     .select("*")
-    .maybeSingle<{ id: number; wallet: string; amount_troll: string; status: string }>();
+    .maybeSingle<{
+      id: number;
+      wallet: string;
+      amount_troll: string;
+      currency: "troll" | "sol";
+      status: string;
+    }>();
   if (claimErr) throw claimErr;
   if (!claimed) {
     console.info(`[payout] not-claimable id=${withdrawalId}`);
-    // Either the row doesn't exist, was already claimed by another worker, or
-    // was already finalized.  Either way: not our work to do.
     return { ok: false, signature: null, reason: "not_claimable" };
   }
   console.info(
-    `[payout] claimed id=${withdrawalId} wallet=${claimed.wallet} amount=${claimed.amount_troll}`,
+    `[payout] claimed id=${withdrawalId} wallet=${claimed.wallet} ` +
+      `currency=${claimed.currency} amount=${claimed.amount_troll}`,
   );
 
   const recipient = new PublicKey(claimed.wallet);
+
+  // -------------------------------------------------------------------------
+  // v23 — dispatch by currency.
+  //
+  // Internal accounting unit is "amount_troll" (legacy column name; v23
+  // overloads it to mean "the SOL-equivalent at entry time" for SOL-currency
+  // rows).  Both branches honor the 3% platform fee.
+  //
+  //   currency = 'sol'   → SystemProgram.transfer of native lamports from
+  //                       the escrow authority's system account to the user
+  //                       wallet.  No ATA management; SOL is native.
+  //   currency = 'troll' → legacy SPL transferChecked path.  Preserved for
+  //                       backwards compat on pre-v23 rows.
+  // -------------------------------------------------------------------------
+  const PLATFORM_FEE_BPS = 300; // 3.00%
+
+  if (claimed.currency === "sol") {
+    // ----- SOL payout -----
+    const amountUiSol = Number.parseFloat(claimed.amount_troll); // overloaded
+    const grossLamports = BigInt(Math.round(amountUiSol * LAMPORTS_PER_SOL));
+    if (grossLamports <= 0n) {
+      console.warn(`[payout] zero-or-negative-amount id=${withdrawalId} (SOL path)`);
+      await markFailed(withdrawalId, "zero_or_negative_amount");
+      return { ok: false, signature: null, reason: "zero_or_negative_amount" };
+    }
+    const feeLamports = (grossLamports * BigInt(PLATFORM_FEE_BPS)) / 10_000n;
+    const netLamports = grossLamports - feeLamports;
+    if (netLamports <= 0n) {
+      await markFailed(withdrawalId, "net_after_fee_zero");
+      return { ok: false, signature: null, reason: "net_after_fee_zero" };
+    }
+    console.info(
+      `[payout] sol-fee-applied id=${withdrawalId} ` +
+        `gross=${grossLamports} fee=${feeLamports} net=${netLamports} bps=${PLATFORM_FEE_BPS}`,
+    );
+
+    const tx = new Transaction();
+    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }));
+    tx.add(
+      SystemProgram.transfer({
+        fromPubkey: authority.publicKey,
+        toPubkey: recipient,
+        lamports: Number(netLamports), // SystemProgram.transfer takes number not bigint
+      }),
+    );
+    tx.feePayer = authority.publicKey;
+
+    let signature: string;
+    try {
+      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.lastValidBlockHeight = lastValidBlockHeight;
+      signature = await sendAndConfirmTransaction(conn, tx, [authority], {
+        commitment: loadEnv().DEPOSIT_CONFIRMATION,
+      });
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.error(`[payout] sol-send-failed id=${withdrawalId} reason=${msg}`);
+      await markFailed(withdrawalId, msg);
+      return { ok: false, signature: null, reason: msg };
+    }
+
+    const { error: updErr } = await sb
+      .from("escrow_withdrawals")
+      .update({ status: "confirmed", signature })
+      .eq("id", withdrawalId);
+    if (updErr) {
+      console.warn(`[payout] post-confirm-update-failed id=${withdrawalId} reason=${updErr.message}`);
+    }
+    console.info(`[payout] sol-DONE id=${withdrawalId} sig=${signature}`);
+    return { ok: true, signature, reason: null };
+  }
+
+  // ----- TROLL payout (legacy) -----
   const recipientAta = getAssociatedTokenAddressSync(mint, recipient);
   const amountUi = Number.parseFloat(claimed.amount_troll);
   const rawAmount = BigInt(Math.round(amountUi * 10 ** decimals));
@@ -78,6 +159,21 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
     await markFailed(withdrawalId, "zero_or_negative_amount");
     return { ok: false, signature: null, reason: "zero_or_negative_amount" };
   }
+
+  // Same 3% fee policy as SOL path.
+  const grossRaw = rawAmount;
+  const feeRaw = (grossRaw * BigInt(PLATFORM_FEE_BPS)) / 10_000n;
+  const netRaw = grossRaw - feeRaw;
+  if (netRaw <= 0n) {
+    console.warn(`[payout] net-after-fee-zero id=${withdrawalId} gross=${grossRaw} fee=${feeRaw}`);
+    await markFailed(withdrawalId, "net_after_fee_zero");
+    return { ok: false, signature: null, reason: "net_after_fee_zero" };
+  }
+  console.info(
+    `[payout] fee-applied id=${withdrawalId} ` +
+      `gross=${grossRaw} fee=${feeRaw} net=${netRaw} bps=${PLATFORM_FEE_BPS}`,
+  );
+  const transferRaw = netRaw;
 
   // Build tx
   const tx = new Transaction();
@@ -101,14 +197,14 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
     );
   }
 
-  // The actual transfer
+  // The actual transfer — transferRaw is gross minus the v21 platform fee.
   tx.add(
     createTransferCheckedInstruction(
       escrowAta,
       mint,
       recipientAta,
       authority.publicKey,
-      rawAmount,
+      transferRaw,
       decimals,
     ),
   );

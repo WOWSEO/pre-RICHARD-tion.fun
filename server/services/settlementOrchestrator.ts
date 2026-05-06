@@ -7,6 +7,7 @@ import { GeckoTerminalProvider } from "../../src/providers/geckoTerminalProvider
 import { CachedBrainProvider } from "./cachedBrainProvider";
 import type { User } from "../../src/market/marketTypes";
 import { seedSingle } from "./marketSeeder";
+import { runPendingWithdrawals } from "./payoutEngine";
 import type { LiveSnapshot } from "./marketSnapshot";
 
 /**
@@ -254,6 +255,11 @@ export async function settleMarketViaWorker(
       market_id: marketId,
       wallet: us.wallet,
       amount_troll: payout.toString(),
+      // v23: every payout is SOL.  The brain's `amount_troll` column is
+      // overloaded here — for v23 markets it carries the SOL-equivalent
+      // pinned at entry time, NOT a TROLL token amount.  The payout
+      // engine reads currency='sol' and dispatches to SystemProgram.transfer.
+      currency: "sol",
       reason,
       status: "pending",
       position_id: us.positionId ?? null,
@@ -295,6 +301,33 @@ export async function settleMarketViaWorker(
         `error=${(err as Error).message}`,
     );
     nextSeedReason = `seed_error: ${(err as Error).message}`;
+  }
+
+  // 7) AUTO-PAYOUT DISPATCH (v22).  As soon as we've queued withdrawal rows
+  // for this market's winners/refundees, kick the payout engine so users
+  // get their tokens automatically — no need for them to visit /claims and
+  // press a button.
+  //
+  // Failure is non-fatal: any rows that don't get processed here will be
+  // picked up by the standalone payouts cron on its next pass.  We cap at
+  // 50 rows per call so a single big settlement doesn't tie up this
+  // response (the payouts cron's normal cap is 100).
+  //
+  // Atomic CAS inside sendWithdrawal means it's safe to call this even if
+  // the user-driven claim button fires concurrently — only one process
+  // can claim each row.
+  if (withdrawalsQueued > 0) {
+    try {
+      const r = await runPendingWithdrawals(50);
+      console.info(
+        `[settle] auto-payout market=${marketId} processed=${r.processed} skipped=${r.skipped}`,
+      );
+    } catch (err) {
+      console.warn(
+        `[settle] auto-payout-error market=${marketId} reason=${(err as Error).message}` +
+          ` (non-fatal — payouts cron will retry)`,
+      );
+    }
   }
 
   console.info(
