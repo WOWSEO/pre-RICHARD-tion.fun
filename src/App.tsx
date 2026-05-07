@@ -293,7 +293,10 @@ function ClassicHome() {
   // controls which token the user is BETTING WITH.  Payouts always come
   // back in SOL regardless of which currency the user picked here.
   const solBalance = useSolBalance();
-  const [currency, setCurrency] = useState<"troll" | "sol">("troll");
+  // v47 SOL-only mode: currency hard-locked to "sol".  Toggle UI hidden.
+  // Backend still accepts both currencies for graceful degradation; we
+  // simply don't expose TROLL bets in the UI anymore.
+  const currency = "sol" as const;
   const walletAddr = wallet.publicKey?.toBase58() ?? null;
 
   // Wallet pending withdrawals — drives the conditional "Payouts (N)" nav pill.
@@ -608,7 +611,7 @@ function ClassicHome() {
             <p className="classic-eyebrow">$TROLL holder market</p>
             <h1>Prediction markets for $TROLL holders.</h1>
             <p className="classic-subcopy">
-              Bet $TROLL or SOL on whether $TROLL market cap is higher or lower at the close. Pick a 15-minute, hourly, or daily window. Pick YES or NO. Win, get paid out instantly in SOL — no claims, no waiting. Markets are real, escrowed on-chain, and settled by oracle median.
+              Bet SOL on whether $TROLL market cap will be higher or lower at the close. Pick a 15-minute, hourly, or daily window. Pick YES or NO. Win, get paid out instantly in SOL — no claims, no waiting. Markets are real, escrowed on-chain, and settled by oracle median.
             </p>
             {/* v24: no chart-link button — the embedded strip below
                 renders the live DexScreener chart on-page. */}
@@ -719,31 +722,10 @@ function ClassicHome() {
               </button>
             </div>
 
-            {/* v23 currency toggle — TROLL or SOL.  Same odds either way;
-                payouts always come back in SOL regardless of pick. */}
-            <div className="currency-toggle" role="tablist" aria-label="Bet currency">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={currency === "troll"}
-                className={currency === "troll" ? "active" : ""}
-                onClick={() => { setCurrency("troll"); setAmountStr(""); setPhase({ kind: "idle" }); }}
-              >
-                $TROLL
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={currency === "sol"}
-                className={currency === "sol" ? "active" : ""}
-                onClick={() => { setCurrency("sol"); setAmountStr(""); setPhase({ kind: "idle" }); }}
-              >
-                SOL
-              </button>
-            </div>
+            {/* v47 — currency toggle removed; SOL-only mode. */}
 
             <label className="amount-label" htmlFor="amount">
-              How much {currency === "sol" ? "SOL" : "$TROLL"} do you want to put up?
+              How much SOL do you want to put up?
             </label>
             <div className="amount-row">
               <input

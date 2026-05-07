@@ -370,31 +370,52 @@ export async function warmSnapshotIfStale(
   maxAgeMs: number = 60_000, // default: refresh if cache > 60s old
   symbol: string = TROLL_SYMBOL,
 ): Promise<{ refreshed: boolean; reason: string }> {
-  try {
-    const sb = db();
-    const { data } = await sb
-      .from("oracle_snapshots")
-      .select("created_at")
-      .eq("symbol", symbol)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle<{ created_at: string }>();
-    if (data) {
-      const ageMs = Date.now() - new Date(data.created_at).getTime();
-      if (ageMs < maxAgeMs) {
-        return { refreshed: false, reason: `fresh ageMs=${ageMs}` };
+  // v46 — fetchTrollSnapshot returns on first success (dex usually), so the
+  // geckoterminal cache row never gets refreshed and the settle engine voids
+  // markets on insufficient_snapshots_geckoterminal.  We now warm BOTH
+  // providers' cache entries explicitly, keyed by `source`, so settle finds
+  // fresh rows for both providers.
+  const sources: Array<{ name: "dexscreener" | "geckoterminal"; fn: () => Promise<ProviderResult> }> = [
+    { name: "dexscreener", fn: fromDexScreener },
+    { name: "geckoterminal", fn: fromGeckoTerminal },
+  ];
+
+  const results: string[] = [];
+  let anyRefreshed = false;
+
+  for (const { name, fn } of sources) {
+    try {
+      const sb = db();
+      const { data } = await sb
+        .from("oracle_snapshots")
+        .select("created_at")
+        .eq("symbol", symbol)
+        .eq("source", name)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle<{ created_at: string }>();
+      if (data) {
+        const ageMs = Date.now() - new Date(data.created_at).getTime();
+        if (ageMs < maxAgeMs) {
+          results.push(`${name}=fresh(${ageMs}ms)`);
+          continue;
+        }
       }
+    } catch {
+      // fall through and refresh
     }
-  } catch {
-    // fall through and try to refresh anyway
+
+    // Cache is stale or missing for this source — try ONE live fetch.
+    // Best-effort: a 429 here is fine, it just means we'll retry next tick.
+    try {
+      const r = await fn();
+      await saveSnapshotToCache(r.snap, r.rawPayload, symbol);
+      results.push(`${name}=refreshed`);
+      anyRefreshed = true;
+    } catch (err) {
+      results.push(`${name}=fail(${(err as Error).message})`);
+    }
   }
 
-  // Cache is missing or stale — try ONE live fetch.  Don't propagate errors;
-  // this is best-effort.
-  try {
-    await fetchTrollSnapshot({ symbol });
-    return { refreshed: true, reason: "ok" };
-  } catch (err) {
-    return { refreshed: false, reason: `fetch_failed: ${(err as Error).message}` };
-  }
+  return { refreshed: anyRefreshed, reason: results.join(",") };
 }

@@ -222,7 +222,31 @@ export async function seedSingle(
       (insertErr as { code?: string }).code === "23505" ||
       /duplicate|unique/i.test((insertErr as Error).message)
     ) {
-      console.warn(`[seed] race-lost schedule=${scheduleType}`);
+      // v46 — race-lost is the EXPECTED outcome when post-settle and tick
+      // sweep-seed both try to create the next market for the same schedule
+      // in the same tick.  Look up the winner so callers can use it.  If
+      // somehow no row exists (extremely rare — would mean the unique index
+      // fired but the row that triggered it isn't queryable), fall back to
+      // the old race_lost reason so the operator notices.
+      const { data: winner } = await sb
+        .from("markets")
+        .select("id, status")
+        .eq("schedule_type", scheduleType)
+        .in("status", ["open", "locked", "settling"])
+        .limit(1)
+        .maybeSingle<{ id: string; status: string }>();
+      if (winner) {
+        console.info(
+          `[seed] race-resolved schedule=${scheduleType} winner=${winner.id} status=${winner.status}`,
+        );
+        return {
+          scheduleType,
+          created: false,
+          reason: "already_active",
+          marketId: winner.id,
+        };
+      }
+      console.warn(`[seed] race-lost schedule=${scheduleType} (no winner found)`);
       return { scheduleType, created: false, reason: "race_lost" };
     }
     console.error(

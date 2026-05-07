@@ -7,6 +7,7 @@ import { escrowTokenAccount } from "../services/escrowVerifier";
 import { ensureOneActivePerSchedule, seedSingle } from "../services/marketSeeder";
 import { tickMarkets } from "../services/tickService";
 import { buildManualSnapshot } from "../services/marketSnapshot";
+import { reconcileEscrowDeposits } from "../services/escrowReconciler";
 import type { ScheduleType } from "../../src/market/marketTypes";
 
 export const adminRouter = Router();
@@ -474,6 +475,28 @@ adminRouter.post("/payouts/run", async (req, res) => {
   } catch (err) {
     const msg = (err as Error).message;
     await logAction(actor, "run_payouts", { limit }, "error", msg);
+    res.status(500).json({ error: msg });
+  }
+});
+
+/* ========================================================================== */
+/* POST /api/admin/reconcile-escrow                                           */
+/* v47 — find and recover orphaned on-chain SOL deposits.                     */
+/* Walks recent SOL transfers TO the escrow authority and either creates a    */
+/* matching position (if a tradable market matches) or queues a refund (if    */
+/* market closed/voided/unmatched).  Idempotent — safe to run repeatedly.    */
+/* Recommended cron schedule: every 1-2 minutes alongside tick + payouts.     */
+/* ========================================================================== */
+adminRouter.post("/reconcile-escrow", async (req, res) => {
+  const actor = req.header("x-admin-actor") ?? "admin";
+  const limit = Number((req.body as { limit?: number })?.limit ?? 50);
+  try {
+    const result = await reconcileEscrowDeposits({ limit });
+    await logAction(actor, "reconcile_escrow", { limit }, "ok", null);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    const msg = (err as Error).message;
+    await logAction(actor, "reconcile_escrow", { limit }, "error", msg);
     res.status(500).json({ error: msg });
   }
 });

@@ -81,15 +81,15 @@ function AboutContent() {
       <h2>About pre-RICHARD-tion.fun</h2>
       <p>
         pre-RICHARD-tion.fun is a permissionless prediction market for $TROLL
-        holders. Bet $TROLL or SOL on whether the $TROLL market cap will be
-        higher or lower than a target at the close of a 15-minute, hourly, or
-        daily window.
+        holders. Bet SOL on whether the $TROLL market cap will be higher or
+        lower than a target at the close of a 15-minute, hourly, or daily
+        window.
       </p>
       <h3>How it works</h3>
       <ol>
         <li>Connect your Solana wallet (Phantom recommended).</li>
         <li>Choose a market window and pick YES or NO.</li>
-        <li>Choose your bet currency ($TROLL or SOL) and amount.</li>
+        <li>Enter your SOL bet amount.</li>
         <li>Sign the on-chain deposit transaction. Your stake is escrowed.</li>
         <li>
           When the market closes, an oracle median (DexScreener and
