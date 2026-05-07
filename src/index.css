@@ -295,19 +295,21 @@ button, input { font: inherit; }
 /* v24 chart strip — bottom-docked thin DexScreener iframe.  Sits below
    the hero, full-width, fixed height.  On desktop the hero grid shrinks
    so this strip fits in the remaining viewport without scrolling. */
-/* v32 chart strip — fills the bottom-left empty zone WITHOUT bleeding off
-   the bottom of the viewport.  v31 was 620px tall pulled up 180px which
-   meant the chart's bottom edge sat below the viewport on standard
-   monitors.  v32: 460px tall, pulled up 280px → visible footprint of
-   ~180px below the hero (always in viewport) + 280px overlapping into
-   the dead zone under the YES/NO float cards (which sit on z:6, above
-   chart's z:5, so they remain visible). */
+/* v34 chart strip — absolute-positioned in frame, pinned to bottom.
+   v33 was in flow with negative margin; that interacted badly with the
+   classic-page's overflow:hidden + 100vh cap when the predict card grew
+   tall enough to push the hero past min-height.  v34 pins the chart to
+   the frame's bottom-left so it's always inside the visible viewport,
+   regardless of hero contents.  Top edge is computed relative to viewport
+   so it sits below the float cards. */
 .chart-strip {
-  position: relative;
+  position: absolute;
   z-index: 5;
-  margin: -280px 0 0;
-  width: calc(100% - clamp(420px, 33vw, 540px));
-  height: 460px;
+  left: 28px;                          /* matches frame's left padding */
+  right: clamp(420px, 33vw, 540px);    /* clears predict card column */
+  bottom: 32px;                        /* matches frame's bottom padding */
+  height: clamp(220px, 32vh, 360px);   /* viewport-relative, fits any monitor */
+  margin: 0;
   border-radius: 22px;
   overflow: hidden;
   border: 1px solid rgba(0, 255, 114, .25);
@@ -346,8 +348,13 @@ button, input { font: inherit; }
   .coin-day-section { grid-template-columns: 1fr; margin-top: 24px; padding: 14px; }
   .classic-copy-card h1 { font-size: clamp(48px, 16vw, 76px); }
   /* v24 chart strip mobile — slightly taller since mobile scrolls anyway.
-     v26: full width on mobile (override the desktop max-width constraint). */
-  .chart-strip { width: 100%; height: 260px; margin-top: 14px; }
+     v26: full width on mobile (override the desktop max-width constraint).
+     v34: revert absolute positioning for mobile flow. */
+  .chart-strip {
+    position: relative;
+    left: auto; right: auto; bottom: auto;
+    width: 100%; height: 260px; margin-top: 14px;
+  }
 }
 
 @media (max-width: 640px) {
