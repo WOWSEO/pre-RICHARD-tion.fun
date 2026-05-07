@@ -16,15 +16,20 @@ const MAX_LOCK_RETRIES = 3;
 /* ========================================================================== */
 /* GET /api/markets — list all                                                */
 /* ========================================================================== */
-marketsRouter.get("/", async (_req, res, next) => {
+marketsRouter.get("/", async (req, res, next) => {
   try {
     const sb = db();
-    const { data, error } = await sb
+    // v53 — optional ?coin=<mint> filter.  Empty/missing = all coins.
+    const coinFilter = typeof req.query.coin === "string" ? req.query.coin : null;
+    let q = sb
       .from("markets")
       .select("*")
       .in("status", ["open", "locked", "settling", "settled", "voided"])
-      .order("close_at", { ascending: true })
-      .returns<MarketRow[]>();
+      .order("close_at", { ascending: true });
+    if (coinFilter) {
+      q = q.eq("coin_mint", coinFilter);
+    }
+    const { data, error } = await q.returns<MarketRow[]>();
     if (error) throw error;
 
     res.json({
@@ -401,6 +406,7 @@ function rowToSummary(m: MarketRow) {
   return {
     id: m.id,
     symbol: m.symbol,
+    coinMint: m.coin_mint, // v53 — multi-coin
     question: m.question,
     scheduleType: m.schedule_type,
     targetMc: num(m.target_mc),

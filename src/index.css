@@ -558,3 +558,134 @@ button, input { font: inherit; }
   .site-footer-inner { flex-direction: column; gap: 8px; }
   .chart-strip { bottom: auto !important; }
 }
+
+/* ============================================================================ *
+ * v54 — Coin Selector tile UI
+ *
+ * Three (or N) horizontal tiles below the hero copy.  Each tile shows a
+ * coin's logo, symbol, and live MC.  The active tile has a green ring and
+ * brighter background.
+ *
+ * Visual language matches the existing classic-* cards: cream-ish glass with
+ * subtle border, dark ink text, accent ring on active.  Tiles are equal-width
+ * on desktop, scroll horizontally on tight mobile widths.
+ * ============================================================================ */
+.coin-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 22px;
+  width: 100%;
+}
+
+.coin-tile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1.5px solid rgba(0, 28, 16, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.42);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  min-height: 64px;
+}
+
+.coin-tile:hover {
+  background: rgba(255, 255, 255, 0.62);
+  transform: translateY(-1px);
+}
+
+.coin-tile.active {
+  background: rgba(232, 230, 218, 0.96);
+  border-color: var(--green, #00f060);
+  box-shadow: 0 0 0 3px rgba(0, 240, 96, 0.22), 0 8px 30px rgba(0, 28, 16, 0.18);
+}
+
+.coin-tile.is-stale .coin-tile-mc {
+  color: #9c1232;
+}
+
+.coin-tile-logo {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: #001d16;
+}
+.coin-tile-logo.monogram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff3e4;
+  font-weight: 950;
+  font-size: 14px;
+  letter-spacing: -0.04em;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.coin-tile-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.coin-tile-meta strong {
+  font-size: 16px;
+  font-weight: 950;
+  letter-spacing: -0.03em;
+  color: #001a0d;
+  line-height: 1;
+}
+
+.coin-tile-mc {
+  font-size: 13px;
+  font-weight: 800;
+  color: #173326;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.coin-tile-meta small {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 800;
+  color: rgba(0, 28, 16, 0.55);
+  line-height: 1;
+  margin-top: 2px;
+}
+
+.coin-tile-check {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--green, #00f060);
+  color: #001a0d;
+  font-weight: 950;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 240, 96, 0.4);
+}
+
+@media (max-width: 720px) {
+  .coin-selector {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 460px) {
+  .coin-selector {
+    grid-template-columns: 1fr;
+  }
+}

@@ -8,6 +8,7 @@ import { ensureOneActivePerSchedule, seedSingle } from "../services/marketSeeder
 import { tickMarkets } from "../services/tickService";
 import { buildManualSnapshot } from "../services/marketSnapshot";
 import { reconcileEscrowDeposits } from "../services/escrowReconciler";
+import { COINS, DEFAULT_COIN, findCoinByMint } from "../../src/config/coins";
 import type { ScheduleType } from "../../src/market/marketTypes";
 
 export const adminRouter = Router();
@@ -84,7 +85,7 @@ async function logAction(
 /* with `created: false` and the existing market's id.                         */
 /* ========================================================================== */
 adminRouter.post("/markets", async (req, res) => {
-  const body = req.body as { scheduleType?: string };
+  const body = req.body as { scheduleType?: string; coinMint?: string };
   const actor = req.header("x-admin-actor") ?? "admin";
 
   try {
@@ -92,12 +93,21 @@ adminRouter.post("/markets", async (req, res) => {
     if (scheduleType !== "15m" && scheduleType !== "hourly" && scheduleType !== "daily") {
       throw new Error("invalid_schedule_type");
     }
-    const result = await seedSingle(scheduleType);
-    await logAction(actor, "create_market", { scheduleType, result }, "ok", null);
+    // v53 — multi-coin: pick coin from body.coinMint, fall back to default.
+    const coin = body.coinMint
+      ? findCoinByMint(body.coinMint) ?? null
+      : DEFAULT_COIN;
+    if (!coin) {
+      throw new Error(`unknown_coin_mint: ${body.coinMint}`);
+    }
+    const result = await seedSingle(coin, scheduleType);
+    await logAction(actor, "create_market", { scheduleType, coinMint: coin.mintAddress, result }, "ok", null);
     res.status(result.created ? 201 : 200).json({
       ok: true,
       created: result.created,
       marketId: result.marketId,
+      coinMint: coin.mintAddress,
+      coinSymbol: coin.symbol,
       reason: result.reason,
       openMc: result.snapshot?.marketCapUsd ?? null,
       openPriceUsd: result.snapshot?.priceUsd ?? null,
@@ -324,11 +334,11 @@ adminRouter.post("/seed-market-from-manual-snapshot", async (req, res) => {
       source: body.source ?? "manual_admin",
     });
 
-    const result = await seedSingle(scheduleType, snapshot);
+    const result = await seedSingle(DEFAULT_COIN, scheduleType, snapshot);
     await logAction(
       actor,
       "seed_market_from_manual_snapshot",
-      { scheduleType, marketCap, priceUsd, source: body.source, result },
+      { scheduleType, coinMint: DEFAULT_COIN.mintAddress, marketCap, priceUsd, source: body.source, result },
       "ok",
       null,
     );

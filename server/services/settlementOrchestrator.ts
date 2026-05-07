@@ -2,6 +2,7 @@ import { db, type MarketRow, type PositionRow, type TradeRow } from "../db/supab
 import { assembleMarket } from "../db/marketLoader";
 import { settleMarket } from "../../src/market/settlementEngine";
 import { TROLL } from "../../src/config/troll";
+import { findCoinByMint, DEFAULT_COIN } from "../../src/config/coins";
 import { DexScreenerProvider } from "../../src/providers/dexScreenerProvider";
 import { GeckoTerminalProvider } from "../../src/providers/geckoTerminalProvider";
 import { CachedBrainProvider } from "./cachedBrainProvider";
@@ -102,6 +103,12 @@ export async function settleMarketViaWorker(
   const wallets = new Set(market.positions.map((p) => p.wallet));
   const users: User[] = Array.from(wallets).map((w) => ({ wallet: w, trollBalance: 0 }));
 
+  // v53 — look up the coin this market is for so settlement uses the
+  // correct mint, dexscreener URLs, and liquidity / volume floors.  Falls
+  // back to DEFAULT_COIN (TROLL) for legacy rows missing coin_mint.
+  const settlementCoin =
+    findCoinByMint(marketRow.coin_mint) ?? DEFAULT_COIN;
+
   // Settlement-time providers — wrapped with CachedBrainProvider so the
   // brain's per-timestamp polling falls back to oracle_snapshots when
   // DexScreener / GeckoTerminal 429.  This is the same cache the tick
@@ -113,12 +120,12 @@ export async function settleMarketViaWorker(
     new CachedBrainProvider(new GeckoTerminalProvider()),
   ];
   console.info(
-    `[settle] running-brain market=${marketId} positions=${market.positions.length} ` +
-      `users=${users.length}`,
+    `[settle] running-brain market=${marketId} coin=${settlementCoin.symbol} ` +
+      `positions=${market.positions.length} users=${users.length}`,
   );
   const receipt = await settleMarket({
     market,
-    coin: TROLL,
+    coin: settlementCoin,
     providers,
     users,
   });
@@ -267,31 +274,37 @@ export async function settleMarketViaWorker(
     if (!error) withdrawalsQueued++;
   }
 
-  // 6) HANDOFF: lifecycle invariant says exactly one open market per schedule
-  // type at all times.  Now that this market is terminal, immediately seed
-  // the replacement so the slot doesn't sit empty waiting for the next cron
+  // 6) HANDOFF: lifecycle invariant says exactly one open market per (coin,
+  // schedule) tuple at all times.  Now that this market is terminal, immediately
+  // seed the replacement so the slot doesn't sit empty waiting for the next cron
   // tick.  Failures here are NON-FATAL — the seed cron will pick it up.
   //
-  // We pass `preFetchedSnapshot` (when the caller is the tick endpoint, this
-  // is the SAME snapshot used by the sweep-seed pass) so we don't trigger an
-  // independent DexScreener / GeckoTerminal hit per settled market.  Without
-  // this, settling 3 stuck markets in a single tick fires 3 provider calls
-  // ON TOP OF the sweep-seed call → 4 hits/min/cron → guaranteed 429s.
+  // v53 — handoff is now coin-aware.  We re-seed the same coin that just
+  // settled, not a hardcoded TROLL.  Look up the coin from the registry via
+  // the market's coin_mint; fall back to DEFAULT_COIN if the row predates v53
+  // (very old rows) or the mint isn't in the registry (manually inserted).
   let nextMarketId: string | null = null;
   let nextSeedReason: string | null = null;
   try {
-    const seedResult = await seedSingle(marketRow.schedule_type, preFetchedSnapshot);
+    const coin =
+      findCoinByMint(marketRow.coin_mint) ?? DEFAULT_COIN;
+    const seedResult = await seedSingle(
+      coin,
+      marketRow.schedule_type,
+      preFetchedSnapshot,
+    );
     if (seedResult.created) {
       nextMarketId = seedResult.marketId ?? null;
       console.info(
         `[settle] handoff-created market=${marketId} → next=${nextMarketId} ` +
-          `schedule=${marketRow.schedule_type}` +
+          `coin=${coin.symbol} schedule=${marketRow.schedule_type}` +
           (preFetchedSnapshot ? ` (using pre-fetched snapshot)` : ""),
       );
     } else {
       nextSeedReason = seedResult.reason ?? null;
       console.info(
-        `[settle] handoff-noop market=${marketId} schedule=${marketRow.schedule_type} reason=${nextSeedReason}`,
+        `[settle] handoff-noop market=${marketId} coin=${coin.symbol} ` +
+          `schedule=${marketRow.schedule_type} reason=${nextSeedReason}`,
       );
     }
   } catch (err) {

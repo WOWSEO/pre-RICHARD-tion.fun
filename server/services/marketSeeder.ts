@@ -1,5 +1,5 @@
 import { db, type MarketRow } from "../db/supabase";
-import { fetchTrollSnapshot, type LiveSnapshot } from "./marketSnapshot";
+import { fetchTrollSnapshot, fetchCoinSnapshot, type LiveSnapshot } from "./marketSnapshot";
 import {
   createMarket,
   nextQuarterHour,
@@ -7,14 +7,19 @@ import {
   nextDailyClose,
 } from "../../src/market/scheduler";
 import { TROLL } from "../../src/config/troll";
-import type { ScheduleType } from "../../src/market/marketTypes";
+import { COINS, DEFAULT_COIN } from "../../src/config/coins";
+import type { CoinConfig, ScheduleType } from "../../src/market/marketTypes";
 
 /**
  * Market lifecycle seeder.  Single source of truth for "is there exactly
- * one active market per schedule_type?"
+ * one active market per (coin, schedule_type)?"
+ *
+ * v53 update: this is now per-coin.  Each registered coin gets its own
+ * 3 schedules.  With 3 coins active, we maintain 9 active markets at all
+ * times.
  *
  * Invariants:
- *   - At most one row per schedule_type with status ∈ open|locked|settling.
+ *   - At most one row per (coin_mint, schedule_type) with status ∈ open|locked|settling.
  *     Enforced in code here AND by the partial unique index in schema.sql.
  *   - Every freshly-created market gets an opening snapshot taken from
  *     DexScreener (fallback GeckoTerminal) at insert time.  open_mc is the
@@ -25,24 +30,24 @@ import type { ScheduleType } from "../../src/market/marketTypes";
  *
  * Idempotency:
  *   - seedSingle is safe to call repeatedly.  If an active market for the
- *     given schedule already exists, it returns { created: false }.
+ *     given (coin, schedule) tuple already exists, it returns { created: false }.
  *   - The DB unique index means even if two cron processes race here, at
  *     most one INSERT succeeds — the other will get a constraint error
  *     which we map to { created: false, reason: 'race_lost' }.
  *
  * NOT covered here:
  *   - Settlement.  When a market settles, the orchestrator MUST call
- *     seedSingle(market.scheduleType) immediately after persisting the
- *     terminal state, so the slot doesn't sit empty.  A safety-net cron
- *     (npm run seed:markets) will also re-seed any empty slot, but only on
- *     its next tick, so the orchestrator handoff is what keeps the gap
- *     short in normal operation.
+ *     seedSingle(coin, schedule) immediately after persisting the terminal
+ *     state, so the slot doesn't sit empty.
  */
 
 const ALL_SCHEDULES: ScheduleType[] = ["15m", "hourly", "daily"];
 
 export interface SeedSingleResult {
   scheduleType: ScheduleType;
+  /** v53 — which coin this seed result applies to. */
+  coinMint?: string;
+  coinSymbol?: string;
   created: boolean;
   marketId?: string;
   /** Reason this seed attempt was a no-op (e.g., 'already_active', 'race_lost'). */
@@ -90,20 +95,26 @@ function computeCloseAt(scheduleType: ScheduleType, now: Date): Date {
  *   "Will $TROLL MC be higher than $42.5M when this 15-minute market closes?"
  *   "Will $TROLL MC be higher than $1.2B at the 7PM ET daily close?"
  */
-function buildQuestion(scheduleType: ScheduleType, openMc: number, closeAt: Date): string {
+function buildQuestion(
+  symbol: string,
+  scheduleType: ScheduleType,
+  openMc: number,
+  closeAt: Date,
+): string {
   const mcLabel = formatMcShort(openMc);
+  const sym = `$${symbol.toUpperCase()}`;
   switch (scheduleType) {
     case "15m":
-      return `Will $TROLL MC be higher than ${mcLabel} when this 15-minute market closes?`;
+      return `Will ${sym} MC be higher than ${mcLabel} when this 15-minute market closes?`;
     case "hourly": {
       const hour = closeAt.toLocaleTimeString("en-US", {
         hour: "numeric",
         timeZone: "America/New_York",
       });
-      return `Will $TROLL MC be higher than ${mcLabel} at the ${hour} ET hourly close?`;
+      return `Will ${sym} MC be higher than ${mcLabel} at the ${hour} ET hourly close?`;
     }
     case "daily":
-      return `Will $TROLL MC be higher than ${mcLabel} at the 7PM ET daily close?`;
+      return `Will ${sym} MC be higher than ${mcLabel} at the 7PM ET daily close?`;
   }
 }
 
@@ -122,56 +133,66 @@ function formatMcShort(n: number): string {
  * to make the INSERT fail if another process already created one.
  */
 export async function seedSingle(
+  coin: CoinConfig,
   scheduleType: ScheduleType,
   preFetchedSnapshot?: LiveSnapshot,
 ): Promise<SeedSingleResult> {
   const sb = db();
 
-  // Pre-flight check — cheap.
+  // Pre-flight check — cheap.  Filter on (coin_mint, schedule_type) so each
+  // coin gets its own slot per schedule.
   const { data: existing, error: existingErr } = await sb
     .from("markets")
-    .select("id, status, schedule_type")
+    .select("id, status, schedule_type, coin_mint")
     .eq("schedule_type", scheduleType)
+    .eq("coin_mint", coin.mintAddress)
     .in("status", ["open", "locked", "settling"])
     .limit(1)
-    .maybeSingle<{ id: string; status: string; schedule_type: string }>();
+    .maybeSingle<{ id: string; status: string; schedule_type: string; coin_mint: string }>();
   if (existingErr) throw existingErr;
   if (existing) {
     console.info(
-      `[seed] noop schedule=${scheduleType} existing=${existing.id} status=${existing.status}`,
+      `[seed] noop coin=${coin.symbol} schedule=${scheduleType} existing=${existing.id} status=${existing.status}`,
     );
-    return { scheduleType, created: false, reason: "already_active", marketId: existing.id };
+    return {
+      scheduleType,
+      coinMint: coin.mintAddress,
+      coinSymbol: coin.symbol,
+      created: false,
+      reason: "already_active",
+      marketId: existing.id,
+    };
   }
 
   // Use the caller-supplied snapshot when available, otherwise fetch.
-  // The tick endpoint passes one snapshot to all 3 schedules in a single
-  // tick so we hit DexScreener once per cron, not once per schedule.
   let snapshot: LiveSnapshot;
   if (preFetchedSnapshot) {
     snapshot = preFetchedSnapshot;
     console.info(
-      `[seed] using-prefetched schedule=${scheduleType} source=${snapshot.source} ` +
+      `[seed] using-prefetched coin=${coin.symbol} schedule=${scheduleType} source=${snapshot.source} ` +
         `fromCache=${snapshot.fromCache} ageMs=${snapshot.ageMs}`,
     );
   } else {
-    console.info(`[seed] snapshotting schedule=${scheduleType}`);
+    console.info(`[seed] snapshotting coin=${coin.symbol} schedule=${scheduleType}`);
     try {
-      snapshot = await fetchTrollSnapshot();
+      snapshot = await fetchCoinSnapshot(coin);
     } catch (err) {
       const msg = (err as Error).message;
-      console.warn(`[seed] snapshot-failed schedule=${scheduleType} reason=${msg}`);
-      // Surface the snapshot error VERBATIM so the tick endpoint can put it
-      // in errors[] without further wrapping — the operator sees exactly
-      // what failed (e.g. "snapshot_unavailable_no_fresh_cache: ...").
+      console.warn(
+        `[seed] snapshot-failed coin=${coin.symbol} schedule=${scheduleType} reason=${msg}`,
+      );
       return {
         scheduleType,
+        coinMint: coin.mintAddress,
+        coinSymbol: coin.symbol,
         created: false,
         reason: msg,
       };
     }
   }
   console.info(
-    `[seed] snapshot schedule=${scheduleType} mc=$${(snapshot.marketCapUsd / 1e6).toFixed(2)}M ` +
+    `[seed] snapshot coin=${coin.symbol} schedule=${scheduleType} ` +
+      `mc=$${(snapshot.marketCapUsd / 1e6).toFixed(2)}M ` +
       `price=$${snapshot.priceUsd.toFixed(8)} source=${snapshot.source} ` +
       `fromCache=${snapshot.fromCache}`,
   );
@@ -181,19 +202,20 @@ export async function seedSingle(
   const now = new Date();
   const closeAt = computeCloseAt(scheduleType, now);
   const market = createMarket({
-    symbol: TROLL.symbol,
+    symbol: coin.symbol,
     scheduleType,
     closeAt,
-    targetMc: snapshot.marketCapUsd, // = open_mc; brain compares settlement_mc against this
+    targetMc: snapshot.marketCapUsd,
     now,
   });
-  market.question = buildQuestion(scheduleType, snapshot.marketCapUsd, closeAt);
+  market.question = buildQuestion(coin.symbol, scheduleType, snapshot.marketCapUsd, closeAt);
 
-  // Insert.  The partial unique index `markets_one_active_per_schedule` is
-  // our last line of defense if two seeders raced past the pre-flight check.
+  // Insert.  The partial unique index `markets_one_active_per_coin_schedule`
+  // is our last line of defense if two seeders raced past the pre-flight check.
   const { error: insertErr } = await sb.from("markets").insert({
     id: market.id,
-    symbol: market.symbol,
+    symbol: coin.symbol,
+    coin_mint: coin.mintAddress,
     question: market.question,
     schedule_type: market.scheduleType,
     target_mc: market.targetMc.toString(),
@@ -208,7 +230,6 @@ export async function seedSingle(
     yes_price_cents: "50",
     no_price_cents: "50",
     created_by: "seeder",
-    // Lifecycle columns — opening snapshot.
     open_price_usd: snapshot.priceUsd.toString(),
     open_mc: snapshot.marketCapUsd.toString(),
     open_snapshot_at: snapshot.fetchedAt.toISOString(),
@@ -216,151 +237,171 @@ export async function seedSingle(
   });
 
   if (insertErr) {
-    // Postgres unique violation has SQLSTATE 23505; Supabase REST surfaces it
-    // as `code: '23505'` in the error object.
     if (
       (insertErr as { code?: string }).code === "23505" ||
       /duplicate|unique/i.test((insertErr as Error).message)
     ) {
-      // v46 — race-lost is the EXPECTED outcome when post-settle and tick
-      // sweep-seed both try to create the next market for the same schedule
-      // in the same tick.  Look up the winner so callers can use it.  If
-      // somehow no row exists (extremely rare — would mean the unique index
-      // fired but the row that triggered it isn't queryable), fall back to
-      // the old race_lost reason so the operator notices.
       const { data: winner } = await sb
         .from("markets")
         .select("id, status")
         .eq("schedule_type", scheduleType)
+        .eq("coin_mint", coin.mintAddress)
         .in("status", ["open", "locked", "settling"])
         .limit(1)
         .maybeSingle<{ id: string; status: string }>();
       if (winner) {
         console.info(
-          `[seed] race-resolved schedule=${scheduleType} winner=${winner.id} status=${winner.status}`,
+          `[seed] race-resolved coin=${coin.symbol} schedule=${scheduleType} winner=${winner.id} status=${winner.status}`,
         );
         return {
           scheduleType,
+          coinMint: coin.mintAddress,
+          coinSymbol: coin.symbol,
           created: false,
           reason: "already_active",
           marketId: winner.id,
         };
       }
-      console.warn(`[seed] race-lost schedule=${scheduleType} (no winner found)`);
-      return { scheduleType, created: false, reason: "race_lost" };
+      console.warn(
+        `[seed] race-lost coin=${coin.symbol} schedule=${scheduleType} (no winner found)`,
+      );
+      return {
+        scheduleType,
+        coinMint: coin.mintAddress,
+        coinSymbol: coin.symbol,
+        created: false,
+        reason: "race_lost",
+      };
     }
     console.error(
-      `[seed] insert-failed schedule=${scheduleType} error=${(insertErr as Error).message}`,
+      `[seed] insert-failed coin=${coin.symbol} schedule=${scheduleType} error=${(insertErr as Error).message}`,
     );
     throw insertErr;
   }
 
   console.info(
-    `[seed] CREATED schedule=${scheduleType} id=${market.id} ` +
+    `[seed] CREATED coin=${coin.symbol} schedule=${scheduleType} id=${market.id} ` +
       `closeAt=${market.closeAt.toISOString()} openMc=$${(snapshot.marketCapUsd / 1e6).toFixed(2)}M`,
   );
-  return { scheduleType, created: true, marketId: market.id, snapshot };
+  return {
+    scheduleType,
+    coinMint: coin.mintAddress,
+    coinSymbol: coin.symbol,
+    created: true,
+    marketId: market.id,
+    snapshot,
+  };
 }
 
 /**
- * Walk all 3 schedule types and seed any empty slot.
+ * v53 — Walk every (active coin, schedule_type) tuple and seed any empty slot.
  *
- * Snapshot strategy (v19 product-rule change):
- *   Each schedule's market gets its OWN fresh snapshot at its OWN opening
- *   moment.  We no longer reuse one snapshot across multiple schedules in
- *   normal operation — that produced identical openMc / targetMc on every
- *   schedule when the cron filled multiple slots in the same tick (cold
- *   start, post-outage backfill).  Per the spec:
+ * With the multi-coin registry in place this maintains 3 schedules × N coins
+ * markets (currently 9 with TROLL, USDUC, BUTT all active).
  *
- *     "fetch one live snapshot only for schedules that are actually opening
- *      at that tick.  If multiple schedules open at exactly the same
- *      timestamp, they may share that snapshot — otherwise each schedule
- *      keeps its own target from its own opening time."
+ * Snapshot strategy:
+ *   Each (coin, schedule) tuple gets its own fresh snapshot at its own
+ *   opening moment.  No cross-coin snapshot reuse (coins have different MCs).
  *
- *   In practice, each empty schedule's seedSingle is called sequentially
- *   without a preFetched value, so each one calls fetchTrollSnapshot()
- *   itself.  The snapshots will all reflect "MC right now," but each is
- *   sourced independently from that schedule's own moment of opening.
+ *   The sequential seeding does mean a cold-start where all 9 slots are
+ *   empty triggers up to 9 provider calls.  With 3 coins × 3 schedules and
+ *   DexScreener's 60 req/min rate limit, that's still well within budget.
  *
- *   Manual emergency override:
- *   When `preBuiltSnapshot` IS supplied (operator manual seed), all empty
- *   schedules share it.  This is the EMERGENCY FALLBACK behavior — kept
- *   so an operator can unstick the lifecycle when both providers are down.
- *   The /api/admin/seed-markets-from-manual-snapshot endpoint is the only
- *   intended caller for that path.
- *
- *   Burst protection:
- *   If 3 schedules need filling at once (true cold-start), this triggers
- *   3 sequential provider calls.  That is well under DexScreener's 60
- *   req/min limit and the snapshot service has DexScreener → Gecko →
- *   cache fallback already, so the burst is safe.
- *
- * Returns a structured summary.  Per-schedule failures (snapshot unavailable,
- * race lost, etc.) are reflected in `results[].reason` — the tick endpoint
- * inspects these to populate `errors[]` in its JSON response.
+ * Manual emergency override:
+ *   `preBuiltSnapshot` is only respected for the legacy single-coin TROLL
+ *   path.  When supplied, all empty TROLL schedules share it, but other
+ *   coins still fetch fresh snapshots.  This preserves the original admin
+ *   "/seed-markets-from-manual-snapshot" recovery semantics while not
+ *   breaking multi-coin: an operator pushing a manual TROLL snapshot
+ *   shouldn't accidentally mis-tag USDUC or BUTT markets.
  */
 export async function ensureOneActivePerSchedule(
   preBuiltSnapshot?: LiveSnapshot,
 ): Promise<{ results: SeedSingleResult[] }> {
   const sb = db();
 
-  // 1) Determine which schedules need creation.
+  // 1) Determine which (coin, schedule) pairs need creation.
   const { data: activeRows, error: activeErr } = await sb
     .from("markets")
-    .select("id, schedule_type, status")
+    .select("id, schedule_type, status, coin_mint")
     .in("status", ["open", "locked", "settling"])
-    .returns<{ id: string; schedule_type: ScheduleType; status: string }[]>();
+    .returns<
+      { id: string; schedule_type: ScheduleType; status: string; coin_mint: string }[]
+    >();
   if (activeErr) throw activeErr;
-  const activeBySched = new Map<ScheduleType, { id: string; status: string }>();
-  for (const r of activeRows ?? []) {
-    activeBySched.set(r.schedule_type, { id: r.id, status: r.status });
-  }
-  const needsFill = ALL_SCHEDULES.filter((s) => !activeBySched.has(s));
 
-  // 2) Short-circuit when nothing needs filling.
-  if (needsFill.length === 0) {
-    console.info(`[seed] ensure-noop all-3-active`);
-    return {
-      results: ALL_SCHEDULES.map((s) => ({
-        scheduleType: s,
-        created: false,
-        reason: "already_active",
-        marketId: activeBySched.get(s)!.id,
-      })),
-    };
+  // Key: `${coin_mint}|${schedule}`.  Lets us check "is the (TROLL, 15m) slot
+  // active?" in O(1) below.
+  const activeMap = new Map<string, { id: string; status: string }>();
+  for (const r of activeRows ?? []) {
+    activeMap.set(`${r.coin_mint}|${r.schedule_type}`, { id: r.id, status: r.status });
+  }
+
+  const activeCoins = COINS.filter((c) => c.active);
+  const totalSlots = activeCoins.length * ALL_SCHEDULES.length;
+  const filledSlots = activeCoins.reduce((acc, c) => {
+    return acc + ALL_SCHEDULES.filter((s) => activeMap.has(`${c.mintAddress}|${s}`)).length;
+  }, 0);
+  const needsFill = totalSlots - filledSlots;
+
+  if (needsFill === 0) {
+    console.info(
+      `[seed] ensure-noop all-${totalSlots}-active across ${activeCoins.length} coins`,
+    );
+    const results: SeedSingleResult[] = [];
+    for (const coin of activeCoins) {
+      for (const sched of ALL_SCHEDULES) {
+        const active = activeMap.get(`${coin.mintAddress}|${sched}`)!;
+        results.push({
+          scheduleType: sched,
+          coinMint: coin.mintAddress,
+          coinSymbol: coin.symbol,
+          created: false,
+          reason: "already_active",
+          marketId: active.id,
+        });
+      }
+    }
+    return { results };
   }
 
   console.info(
-    `[seed] ensure needsFill=${needsFill.join(",")} ` +
-      `mode=${preBuiltSnapshot ? "manual-override (shared)" : "auto (per-schedule fresh)"}`,
+    `[seed] ensure needsFill=${needsFill}/${totalSlots} ` +
+      `coins=${activeCoins.map((c) => c.symbol).join(",")} ` +
+      `mode=${preBuiltSnapshot ? "manual-override (TROLL only)" : "auto (per-coin per-schedule fresh)"}`,
   );
 
-  // 3) Walk all 3 schedules.  Already-active → no-op.  Empty schedules:
-  //    - manual override: share the operator-supplied snapshot
-  //    - auto path: pass undefined so seedSingle fetches its own fresh
+  // 2) Walk every (coin, schedule) tuple.  Already-active → no-op.
   const results: SeedSingleResult[] = [];
-  for (const sched of ALL_SCHEDULES) {
-    const active = activeBySched.get(sched);
-    if (active) {
-      results.push({
-        scheduleType: sched,
-        created: false,
-        reason: "already_active",
-        marketId: active.id,
-      });
-      continue;
-    }
-    try {
-      // preBuiltSnapshot is shared across all schedules ONLY when explicitly
-      // supplied (manual emergency seed).  Otherwise pass undefined so each
-      // seedSingle fetches its own fresh snapshot — that's the v19 fix.
-      results.push(await seedSingle(sched, preBuiltSnapshot));
-    } catch (err) {
-      results.push({
-        scheduleType: sched,
-        created: false,
-        reason: `error: ${(err as Error).message}`,
-      });
+  for (const coin of activeCoins) {
+    for (const sched of ALL_SCHEDULES) {
+      const active = activeMap.get(`${coin.mintAddress}|${sched}`);
+      if (active) {
+        results.push({
+          scheduleType: sched,
+          coinMint: coin.mintAddress,
+          coinSymbol: coin.symbol,
+          created: false,
+          reason: "already_active",
+          marketId: active.id,
+        });
+        continue;
+      }
+      try {
+        // Manual override only applies to TROLL — protects multi-coin
+        // semantics (don't tag USDUC markets with a TROLL snapshot).
+        const overrideSnap =
+          coin.symbol === "TROLL" ? preBuiltSnapshot : undefined;
+        results.push(await seedSingle(coin, sched, overrideSnap));
+      } catch (err) {
+        results.push({
+          scheduleType: sched,
+          coinMint: coin.mintAddress,
+          coinSymbol: coin.symbol,
+          created: false,
+          reason: `error: ${(err as Error).message}`,
+        });
+      }
     }
   }
   return { results };
@@ -370,11 +411,18 @@ export async function ensureOneActivePerSchedule(
  * Returns the currently-active market row per schedule type (or null when a
  * slot is empty).  Used by the admin overview / debugging.
  */
+/**
+ * Returns the currently-active market row per schedule for the DEFAULT coin
+ * (TROLL).  Pre-v53 callers continue to work without change.
+ *
+ * For per-coin views, use listActiveByCoinSchedule().
+ */
 export async function listActiveBySchedule(): Promise<Record<ScheduleType, MarketRow | null>> {
   const sb = db();
   const { data, error } = await sb
     .from("markets")
     .select("*")
+    .eq("coin_mint", DEFAULT_COIN.mintAddress)
     .in("status", ["open", "locked", "settling"])
     .returns<MarketRow[]>();
   if (error) throw error;
@@ -385,6 +433,36 @@ export async function listActiveBySchedule(): Promise<Record<ScheduleType, Marke
   };
   for (const row of data ?? []) {
     out[row.schedule_type] = row;
+  }
+  return out;
+}
+
+/**
+ * v53 — Returns the currently-active market rows grouped by (coin_mint, schedule).
+ * Map shape: outer key = coin_mint, inner key = schedule_type.
+ */
+export async function listActiveByCoinSchedule(): Promise<
+  Map<string, Record<ScheduleType, MarketRow | null>>
+> {
+  const sb = db();
+  const { data, error } = await sb
+    .from("markets")
+    .select("*")
+    .in("status", ["open", "locked", "settling"])
+    .returns<MarketRow[]>();
+  if (error) throw error;
+  const out = new Map<string, Record<ScheduleType, MarketRow | null>>();
+  for (const coin of COINS) {
+    out.set(coin.mintAddress, { "15m": null, hourly: null, daily: null });
+  }
+  for (const row of data ?? []) {
+    let coinMap = out.get(row.coin_mint);
+    if (!coinMap) {
+      // Unknown coin in DB (registry might not have it) — still surface it.
+      coinMap = { "15m": null, hourly: null, daily: null };
+      out.set(row.coin_mint, coinMap);
+    }
+    coinMap[row.schedule_type] = row;
   }
   return out;
 }

@@ -5,6 +5,7 @@ import { marketsRouter } from "./routes/markets";
 import { positionsRouter } from "./routes/positions";
 import { auditRouter } from "./routes/audit";
 import { adminRouter } from "./routes/admin";
+import { coinsRouter } from "./routes/coins";
 import { escrowAuthority } from "./services/escrowVerifier";
 
 function main(): void {
@@ -48,6 +49,7 @@ function main(): void {
   app.use("/api/positions", positionsRouter);
   app.use("/api/audit", auditRouter);
   app.use("/api/admin", adminRouter);
+  app.use("/api/coins", coinsRouter);
 
   // Centralised error handler — keeps stack traces out of responses
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

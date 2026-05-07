@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Route, Routes, Link, useNavigate } from "react-router-dom";
+import { Route, Routes, Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { PublicKey } from "@solana/web3.js";
@@ -7,25 +7,37 @@ import { WalletConnectButton } from "./components/WalletConnectButton";
 import { MyPositions } from "./components/MyPositions";
 import { Footer } from "./components/Footer";
 import { Legal, type LegalPage } from "./components/Legal";
+import { CoinSelector } from "./components/CoinSelector";
 import { AdminPage } from "./pages/AdminPage";
 import { MarketPage } from "./pages/MarketPage";
 import { AuditPage } from "./pages/AuditPage";
 import { TrollPage } from "./pages/TrollPage";
 import { ClaimsPage } from "./pages/ClaimsPage";
 import { useServerMarkets, useUserWithdrawals } from "./hooks/useServerMarkets";
+import { useCoins, findCoin, findCoinBySymbol } from "./hooks/useCoins";
+import { useCoinTicker } from "./hooks/useCoinTicker";
 import { useTrollBalance } from "./hooks/useTrollBalance";
 import { useSolBalance } from "./hooks/useSolBalance";
 import { useShortCountdown } from "./hooks/useShortCountdown";
-import { api, type MarketSummary } from "./services/apiClient";
+import { api, type MarketSummary, type CoinWire } from "./services/apiClient";
 import { pickPanelMarkets } from "./services/marketSelection";
 import { depositToEscrow, depositSolToEscrow, getTrollDecimals } from "./services/escrow";
 import { formatTrollBalance } from "./services/trollBalance";
 import type { Side, TradeQuote, ScheduleType } from "./market/marketTypes";
 
 /* ------------------------------------------------------------------------- *
- * Live $TROLL ticker for the floating MC card.
- * Untouched from the prior version — same DexScreener pair source, same
- * 2-second cadence, same error handling.  Do NOT redesign this.
+ * Live ticker for the floating MC card.
+ *
+ * v54 — pre-v54 used a hardcoded TROLL pair URL.  Now the ticker is driven
+ * by whichever coin the user has selected via the CoinSelector tiles.  The
+ * actual fetch logic lives in src/hooks/useCoinTicker.ts so the same code
+ * path runs for TROLL, USDUC, BUTT, or any future coin.
+ *
+ * Pre-v54 helpers (getTrollPairAddress / getDexScreenerApiUrl / getDex-
+ * ScreenerEmbedUrl / useTrollTicker) are intentionally REMOVED — there is
+ * no legacy single-coin code path on the home page anymore.  Other pages
+ * (AdminPage, AuditPage, etc.) still use TROLL by importing from
+ * src/config/troll.ts which is now a thin re-export from coins.ts.
  * ------------------------------------------------------------------------- */
 
 type TrollTicker = {
@@ -35,63 +47,20 @@ type TrollTicker = {
   error: string | null;
 };
 
-const emptyTicker: TrollTicker = { priceUsd: null, marketCapUsd: null, updatedAt: null, error: null };
-
-function getTrollPairAddress() {
-  const configured = import.meta.env.VITE_DEXSCREENER_PAIR_URL || "https://dexscreener.com/solana/4w2cysotx6czaugmmwg13hdpy4qemg2czekyeqyk9ama";
-  return configured.split("/").filter(Boolean).pop() || "4w2cysotx6czaugmmwg13hdpy4qemg2czekyeqyk9ama";
-}
-
-function getDexScreenerApiUrl() {
-  return `https://api.dexscreener.com/latest/dex/pairs/solana/${getTrollPairAddress()}`;
-}
-
-function getDexScreenerEmbedUrl() {
-  return `https://dexscreener.com/solana/${getTrollPairAddress()}?embed=1&theme=dark&trades=0&info=1`;
-}
-
-function useTrollTicker() {
-  const [ticker, setTicker] = useState<TrollTicker>(emptyTicker);
-  const apiUrl = useMemo(getDexScreenerApiUrl, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadTicker() {
-      try {
-        const response = await fetch(apiUrl, { cache: "no-store" });
-        if (!response.ok) throw new Error(`DexScreener ${response.status}`);
-        const data = await response.json();
-        const pair = data?.pair;
-        const priceUsd = Number(pair?.priceUsd);
-        const marketCapUsd = Number(pair?.fdv ?? pair?.marketCap);
-
-        if (!Number.isFinite(priceUsd) || !Number.isFinite(marketCapUsd)) {
-          throw new Error("Missing live $TROLL price data");
-        }
-
-        if (!cancelled) {
-          setTicker({ priceUsd, marketCapUsd, updatedAt: new Date(), error: null });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setTicker((current) => ({
-            ...current,
-            error: error instanceof Error ? error.message : "Price feed unavailable",
-          }));
-        }
-      }
-    }
-
-    loadTicker();
-    const timer = window.setInterval(loadTicker, 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [apiUrl]);
-
-  return ticker;
+/**
+ * Build the dexscreener iframe embed URL for a given coin.
+ *
+ * Each registered coin has a pair URL like
+ *   https://dexscreener.com/solana/<pairAddress>
+ * We append the iframe-friendly query string to render the chart.
+ */
+function buildChartUrl(coin: CoinWire | null): string {
+  if (!coin) return "";
+  const base = coin.dexscreenerEmbedUrl;
+  // Strip any existing query string (registry can store either bare URL
+  // or one with ?embed already).  Then append our canonical params.
+  const clean = base.split("?")[0]!;
+  return `${clean}?embed=1&theme=dark&trades=0&info=1`;
 }
 
 function formatUsdPrice(value: number | null) {
@@ -270,12 +239,39 @@ type Phase =
 
 function ClassicHome() {
   const navigate = useNavigate();
-  const ticker = useTrollTicker();
+  const [searchParams, setSearchParams] = useSearchParams();
   const liveClock = useLiveClock();
-  const chartUrl = useMemo(getDexScreenerEmbedUrl, []);
 
-  // Real backend markets.  Polled every 5 s by useServerMarkets.
-  const { markets: allMarkets, escrowAccount, escrowSolAccount, error: marketsError } = useServerMarkets();
+  // v54 — coin registry + selection.  Selection priority:
+  //   1. ?coin=<mint> URL param (literal mint match)
+  //   2. ?coin=<symbol> URL param (e.g. ?coin=USDUC, case-insensitive)
+  //   3. first coin in displayOrder (TROLL by default)
+  // Any change to selected coin writes ?coin=<mint> back into the URL so
+  // refresh / shared links land on the same coin.
+  const { coins, error: coinsError } = useCoins();
+  const urlCoin = searchParams.get("coin");
+  const selectedCoin = useMemo<CoinWire | null>(() => {
+    if (coins.length === 0) return null;
+    return (
+      findCoin(coins, urlCoin) ??
+      findCoinBySymbol(coins, urlCoin) ??
+      coins[0]!
+    );
+  }, [coins, urlCoin]);
+
+  // Live ticker drives the MC card — switches with selectedCoin.
+  const ticker = useCoinTicker(selectedCoin);
+  // Chart embed URL also switches with the coin.
+  const chartUrl = useMemo(() => buildChartUrl(selectedCoin), [selectedCoin]);
+
+  // Real backend markets.  Polled every 5s.  v54: filter to selected coin
+  // client-side.
+  const { markets: allMarketsAllCoins, escrowAccount, escrowSolAccount, error: marketsError } = useServerMarkets();
+  const allMarkets = useMemo<MarketSummary[]>(() => {
+    if (!selectedCoin) return allMarketsAllCoins;
+    return allMarketsAllCoins.filter((m) => m.coinMint === selectedCoin.mint);
+  }, [allMarketsAllCoins, selectedCoin]);
+
   // Always exactly 3 slots — one per schedule_type — possibly null/settling.
   const slots = useMemo(() => buildPanelSlots(allMarkets), [allMarkets]);
   // Convenience: tradable (status=active) market list, in slot order.
@@ -357,6 +353,16 @@ function ClassicHome() {
     }
   }, [activeMarkets, selectedId]);
   const selected = activeMarkets.find((m) => m.id === selectedId) ?? null;
+
+  // v54 — coin selection callback.  Defined here (after selectedId state)
+  // so it can clear the selected market on coin change — the auto-advance
+  // effect above will then pick a fresh market for the new coin.
+  const selectCoin = (mint: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("coin", mint);
+    setSearchParams(next, { replace: true });
+    setSelectedId(null);
+  };
 
   const [side, setSide] = useState<Side>("YES");
   const [amountStr, setAmountStr] = useState("");
@@ -608,18 +614,33 @@ function ClassicHome() {
 
         <section className="classic-hero">
           <div className="classic-copy-card">
-            <p className="classic-eyebrow">$TROLL holder market</p>
-            <h1>Prediction markets for $TROLL holders.</h1>
-            <p className="classic-subcopy">
-              Bet SOL on whether $TROLL market cap will be higher or lower at the close. Pick a 15-minute, hourly, or daily window. Pick YES or NO. Win, get paid out instantly in SOL — no claims, no waiting. Markets are real, escrowed on-chain, and settled by oracle median.
+            <p className="classic-eyebrow">
+              {selectedCoin ? `$${selectedCoin.symbol} holder market` : "memecoin holder market"}
             </p>
-            {/* v24: no chart-link button — the embedded strip below
-                renders the live DexScreener chart on-page. */}
+            <h1>
+              Prediction markets for {selectedCoin ? `$${selectedCoin.symbol}` : "memecoin"} holders.
+            </h1>
+            <p className="classic-subcopy">
+              Bet SOL on whether {selectedCoin ? `$${selectedCoin.symbol}` : "the coin's"} market cap will be higher or lower at the close. Pick a 15-minute, hourly, or daily window. Pick YES or NO. Win, get paid out instantly in SOL — no claims, no waiting. Markets are real, escrowed on-chain, and settled by oracle median.
+            </p>
+            {/* v54 — coin selector tile UI.  Switches the entire page (markets,
+                chart, MC card) when the user picks a different coin.  See
+                src/components/CoinSelector.tsx. */}
+            <CoinSelector
+              coins={coins}
+              selectedMint={selectedCoin?.mint ?? null}
+              onSelect={selectCoin}
+            />
+            {coinsError && (
+              <small style={{ color: "#9c1232", display: "block", marginTop: 8 }}>
+                Coin registry unavailable: {coinsError}
+              </small>
+            )}
           </div>
 
-          {/* Live MC card — UNCHANGED from prior version. */}
+          {/* Live MC card — v54 coin-aware. */}
           <div className={`classic-float-card mc-card ${ticker.error ? "is-stale" : "is-live"}`}>
-            <small>Live $TROLL MC</small>
+            <small>Live ${selectedCoin?.symbol ?? "—"} MC</small>
             <strong>{formatMarketCap(ticker.marketCapUsd)}</strong>
             <span>{formatUsdPrice(ticker.priceUsd)} · true pair price</span>
             <em>{formatFeedStatus(ticker.updatedAt, ticker.error)}</em>
@@ -794,12 +815,20 @@ function ClassicHome() {
             brings back a compact 200px-tall strip that fits in the
             remaining viewport space below the hero.  Zero scroll on
             desktop — the hero shrinks just enough to leave room. */}
-        <section className="chart-strip" aria-label="$TROLL live chart">
+        <section
+          className="chart-strip"
+          aria-label={`${selectedCoin ? `$${selectedCoin.symbol}` : ""} live chart`}
+        >
           <iframe
-            title="$TROLL live chart"
+            title={`${selectedCoin ? `$${selectedCoin.symbol}` : "Live"} chart`}
             src={chartUrl}
             allow="clipboard-write"
             loading="lazy"
+            // v54 — re-mount the iframe on coin switch so DexScreener
+            // doesn't try to keep the old pair's websocket open.  Using
+            // chartUrl as a key gives us a free remount whenever the URL
+            // changes.
+            key={chartUrl}
           />
         </section>
       </div>

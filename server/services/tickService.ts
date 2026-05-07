@@ -301,10 +301,15 @@ export async function tickMarkets(): Promise<TickResult> {
   }
 
   const elapsedMs = Date.now() - startedAt;
+  // v53 — log includes the multi-coin total slot count.  3 schedules × N coins
+  // is the denominator.  active.length = ALL_SCHEDULES.length (3); the 3-coin
+  // total is reflected in the listActiveByCoinSchedule view that callers use
+  // for richer dashboards.  Keeping this log line schedule-only preserves
+  // backwards-compat with existing log parsers.
   console.info(
     `[tick] DONE elapsedMs=${elapsedMs} settled=${settled.length} ` +
       `created=${created.length} skipped=${skipped.length} errors=${errors.length} ` +
-      `active=${active.filter((a) => a.marketId).length}/3`,
+      `default-coin-active=${active.filter((a) => a.marketId).length}/3`,
   );
 
   return { settled, created, active, skipped, errors, elapsedMs };

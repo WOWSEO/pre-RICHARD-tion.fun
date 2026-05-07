@@ -16,6 +16,8 @@ export interface UserRow {
 export interface MarketRow {
   id: string;
   symbol: string;
+  /** v53 — multi-coin support.  Mint address of the coin this market is for. */
+  coin_mint: string;
   question: string;
   schedule_type: "15m" | "hourly" | "daily";
   target_mc: string;

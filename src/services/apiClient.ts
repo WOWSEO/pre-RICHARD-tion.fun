@@ -58,6 +58,8 @@ async function call<T>(
 export interface MarketSummary {
   id: string;
   symbol: string;
+  /** v53 — multi-coin support.  Mint address of the coin this market is for. */
+  coinMint: string;
   question: string;
   scheduleType: ScheduleType;
   targetMc: number;
@@ -148,6 +150,30 @@ export interface MarketsListResponse {
   escrowSolAccount?: string;
 }
 
+/**
+ * v53 — coin registry shape returned by GET /api/coins.
+ * Mirrors server/routes/coins.ts CoinWire.
+ */
+export interface CoinWire {
+  mint: string;
+  symbol: string;
+  name: string;
+  dexscreenerPairUrl: string;
+  geckoterminalUrl: string;
+  dexscreenerEmbedUrl: string;
+  geckoterminalPoolUrl: string;
+  imageUrl: string | null;
+  minLiquidityUsd: number;
+  minVolume24hUsd: number;
+  isActive: boolean;
+  displayOrder: number;
+}
+
+export interface CoinsListResponse {
+  coins: CoinWire[];
+  source: "db" | "fallback";
+}
+
 /* ========================================================================== */
 /* Public API                                                                 */
 /* ========================================================================== */
@@ -155,7 +181,17 @@ export interface MarketsListResponse {
 export const api = {
   health: () => call<{ ok: boolean; time: string }>("/health"),
 
-  listMarkets: () => call<MarketsListResponse>("/markets"),
+  /**
+   * List markets.  Pass {coin: <mint>} to filter to one coin (v53+).
+   * Omit for all coins.
+   */
+  listMarkets: (opts: { coin?: string } = {}) => {
+    const qs = opts.coin ? `?coin=${encodeURIComponent(opts.coin)}` : "";
+    return call<MarketsListResponse>(`/markets${qs}`);
+  },
+
+  /** v53 — list registered coins (TROLL, USDUC, BUTT, ...). */
+  listCoins: () => call<CoinsListResponse>("/coins"),
 
   getMarket: (id: string) =>
     call<{ market: MarketDetail; escrowAccount: string; escrowSolAccount?: string }>(

@@ -24,6 +24,7 @@
 
 import { TROLL } from "../../src/config/troll";
 import { db, type OracleSnapshotRow } from "../db/supabase";
+import type { CoinConfig } from "../../src/market/marketTypes";
 
 export interface LiveSnapshot {
   /** UI USD price per token, e.g. 0.000043 */
@@ -47,16 +48,40 @@ export interface LiveSnapshot {
 const DEFAULT_CACHE_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes per spec
 const TROLL_SYMBOL = "TROLL";
 
-/* DexScreener pair — read from server env so server and client can be wired
- * to the same pair without duplicating the address.  Falls back to the same
- * default the frontend uses. */
-function getPairAddress(): string {
-  const url =
-    process.env.DEXSCREENER_PAIR_URL ??
-    process.env.VITE_DEXSCREENER_PAIR_URL ??
-    "https://dexscreener.com/solana/4w2cysotx6czaugmmwg13hdpy4qemg2czekyeqyk9ama";
-  const tail = url.split("/").filter(Boolean).pop();
-  return tail || "4w2cysotx6czaugmmwg13hdpy4qemg2czekyeqyk9ama";
+/**
+ * v53 — extract the pair address from a coin's dexscreener_embed_url.
+ *
+ * The "pair" is the LP pair address (the slug at the end of the dexscreener
+ * embed URL).  We need it for the live-data API endpoint, which uses pair
+ * addresses, not token mints.  Pair pages look like:
+ *   https://dexscreener.com/solana/<pairAddress>
+ *
+ * For TROLL the env var DEXSCREENER_PAIR_URL is the legacy override; if set,
+ * it wins.  For other coins we extract from the coin's embed URL.
+ */
+function pairAddressFromEmbedUrl(embedUrl: string): string {
+  const tail = embedUrl.split("/").filter(Boolean).pop();
+  return tail || "";
+}
+
+function getPairAddressForCoin(coin: CoinConfig): string {
+  // Legacy: TROLL respects the env override for backwards compat with
+  // pre-v53 deployments that hardcoded the env var.
+  if (coin.symbol === "TROLL") {
+    const url =
+      process.env.DEXSCREENER_PAIR_URL ??
+      process.env.VITE_DEXSCREENER_PAIR_URL;
+    if (url) {
+      const tail = url.split("/").filter(Boolean).pop();
+      if (tail) return tail;
+    }
+  }
+  // Default: extract from the coin's dexscreener_embed_url (or
+  // dexscreenerSource, which is the API URL — fall through both).
+  const fromSource = pairAddressFromEmbedUrl(coin.dexscreenerSource);
+  if (fromSource) return fromSource;
+  // Last resort fallback for pre-existing TROLL deployments
+  return "4w2cysotx6czaugmmwg13hdpy4qemg2czekyeqyk9ama";
 }
 
 /* ------------------------------------------------------------------------- */
@@ -68,8 +93,8 @@ interface ProviderResult {
   rawPayload: unknown;
 }
 
-async function fromDexScreener(): Promise<ProviderResult> {
-  const pair = getPairAddress();
+async function fromDexScreener(coin: CoinConfig): Promise<ProviderResult> {
+  const pair = getPairAddressForCoin(coin);
   const url = `https://api.dexscreener.com/latest/dex/pairs/solana/${pair}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`dexscreener_${res.status}`);
@@ -93,8 +118,13 @@ async function fromDexScreener(): Promise<ProviderResult> {
   };
 }
 
-async function fromGeckoTerminal(): Promise<ProviderResult> {
-  const mint = process.env.TROLL_MINT ?? TROLL.mintAddress;
+async function fromGeckoTerminal(coin: CoinConfig): Promise<ProviderResult> {
+  // For TROLL, env override wins (pre-v53 backwards compat).
+  // For other coins, always use the coin's mint.
+  const mint =
+    coin.symbol === "TROLL"
+      ? process.env.TROLL_MINT ?? coin.mintAddress
+      : coin.mintAddress;
   if (!mint) throw new Error("geckoterminal_no_mint");
   const url = `https://api.geckoterminal.com/api/v2/networks/solana/tokens/${mint}`;
   const res = await fetch(url, {
@@ -234,9 +264,10 @@ export interface FetchOptions {
 }
 
 /**
- * Take a fresh snapshot.  Tries DexScreener first, falls back to
- * GeckoTerminal, then the cache.  Throws a structured error string if all
- * three paths fail.
+ * v53 — Take a fresh snapshot for an arbitrary coin.  Tries DexScreener
+ * first, falls back to GeckoTerminal, then the cache (keyed by symbol so
+ * each coin has its own cache lane).  Throws a structured error string if
+ * all three paths fail.
  *
  * Error shapes (callers surface these verbatim — they're public API):
  *   - "live_snapshot_failed: dexscreener: <reason> | geckoterminal: <reason>"
@@ -248,14 +279,17 @@ export interface FetchOptions {
  * The two error shapes are distinguished so the operator can tell whether
  * the system has *ever* seen a snapshot or just hasn't seen one in 5 min.
  */
-export async function fetchTrollSnapshot(opts: FetchOptions = {}): Promise<LiveSnapshot> {
+export async function fetchCoinSnapshot(
+  coin: CoinConfig,
+  opts: FetchOptions = {},
+): Promise<LiveSnapshot> {
   const cacheMaxAgeMs = opts.cacheMaxAgeMs ?? DEFAULT_CACHE_MAX_AGE_MS;
-  const symbol = opts.symbol ?? TROLL_SYMBOL;
+  const symbol = opts.symbol ?? coin.symbol;
   const errors: string[] = [];
 
   // 1) DexScreener
   try {
-    const r = await fromDexScreener();
+    const r = await fromDexScreener(coin);
     await saveSnapshotToCache(r.snap, r.rawPayload, symbol);
     return r.snap;
   } catch (err) {
@@ -264,7 +298,7 @@ export async function fetchTrollSnapshot(opts: FetchOptions = {}): Promise<LiveS
 
   // 2) GeckoTerminal
   try {
-    const r = await fromGeckoTerminal();
+    const r = await fromGeckoTerminal(coin);
     await saveSnapshotToCache(r.snap, r.rawPayload, symbol);
     return r.snap;
   } catch (err) {
@@ -272,19 +306,19 @@ export async function fetchTrollSnapshot(opts: FetchOptions = {}): Promise<LiveS
   }
 
   // 3) Cache fallback
-  console.warn(`[snapshot] both-providers-failed errors="${errors.join(" | ")}"`);
+  console.warn(
+    `[snapshot] both-providers-failed coin=${coin.symbol} errors="${errors.join(" | ")}"`,
+  );
   const cached = await readFreshCachedSnapshot(symbol, cacheMaxAgeMs);
   if (cached) {
     console.info(
-      `[snapshot] cache-hit source=${cached.source} ageMs=${cached.ageMs} ` +
+      `[snapshot] cache-hit coin=${coin.symbol} source=${cached.source} ageMs=${cached.ageMs} ` +
         `mc=$${(cached.marketCapUsd / 1e6).toFixed(2)}M`,
     );
     return cached;
   }
 
   // 4) No fresh cache — distinguish "never had one" vs "had one but stale"
-  // by reading the latest row regardless of age and including age in the
-  // error message.
   let cacheDescriptor = "cache: missing";
   try {
     const sb = db();
@@ -300,13 +334,20 @@ export async function fetchTrollSnapshot(opts: FetchOptions = {}): Promise<LiveS
       cacheDescriptor = `cache: ${Math.round(ageMs / 1000)}s old (max ${Math.round(cacheMaxAgeMs / 1000)}s)`;
     }
   } catch {
-    // best-effort — if we can't read the cache for descriptor purposes,
-    // the original "missing" descriptor stands.
+    // best-effort
   }
 
   throw new Error(
     `snapshot_unavailable_no_fresh_cache: ${errors.join(" | ")} | ${cacheDescriptor}`,
   );
+}
+
+/**
+ * Backwards-compatible TROLL-only wrapper.  Pre-v53 callers continue to work.
+ * New code should call fetchCoinSnapshot(coin) directly.
+ */
+export async function fetchTrollSnapshot(opts: FetchOptions = {}): Promise<LiveSnapshot> {
+  return fetchCoinSnapshot(TROLL, opts);
 }
 
 /**
@@ -369,13 +410,19 @@ export async function buildManualSnapshot(input: {
 export async function warmSnapshotIfStale(
   maxAgeMs: number = 60_000, // default: refresh if cache > 60s old
   symbol: string = TROLL_SYMBOL,
+  coin: CoinConfig = TROLL,
 ): Promise<{ refreshed: boolean; reason: string }> {
   // v46 — fetchTrollSnapshot returns on first success (dex usually), so the
   // geckoterminal cache row never gets refreshed and the settle engine voids
   // markets on insufficient_snapshots_geckoterminal.  We now warm BOTH
   // providers' cache entries explicitly, keyed by `source`, so settle finds
   // fresh rows for both providers.
-  const sources: Array<{ name: "dexscreener" | "geckoterminal"; fn: () => Promise<ProviderResult> }> = [
+  // v53 — providers now take a CoinConfig.  Default coin = TROLL preserves
+  // pre-v53 single-coin behaviour for callers that don't pass a coin.
+  const sources: Array<{
+    name: "dexscreener" | "geckoterminal";
+    fn: (c: CoinConfig) => Promise<ProviderResult>;
+  }> = [
     { name: "dexscreener", fn: fromDexScreener },
     { name: "geckoterminal", fn: fromGeckoTerminal },
   ];
@@ -408,7 +455,7 @@ export async function warmSnapshotIfStale(
     // Cache is stale or missing for this source — try ONE live fetch.
     // Best-effort: a 429 here is fine, it just means we'll retry next tick.
     try {
-      const r = await fn();
+      const r = await fn(coin);
       await saveSnapshotToCache(r.snap, r.rawPayload, symbol);
       results.push(`${name}=refreshed`);
       anyRefreshed = true;

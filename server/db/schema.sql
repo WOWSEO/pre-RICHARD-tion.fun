@@ -26,11 +26,35 @@ create table if not exists users (
 );
 
 -- ============================================================================
+-- SUPPORTED COINS — registry of bettable tokens (v53+)
+-- ============================================================================
+-- Each row is a token that the seeder will spawn markets for, and that the
+-- frontend will display in the coin-selector tile UI.  Per-coin settlement
+-- floors live here so liquid coins and thin coins can have different rules.
+create table if not exists supported_coins (
+  mint                  text primary key,
+  symbol                text not null,
+  name                  text not null,
+  dexscreener_pair_url  text not null,
+  geckoterminal_url     text not null,
+  dexscreener_embed_url text not null,
+  geckoterminal_pool_url text not null,
+  image_url             text,
+  min_liquidity_usd     numeric not null default 25000,
+  min_volume_24h_usd    numeric not null default 10000,
+  is_active             boolean not null default true,
+  display_order         integer not null default 1000,
+  created_at            timestamptz not null default now()
+);
+
+-- ============================================================================
 -- MARKETS — one row per prediction window, mirrors brain's Market type
 -- ============================================================================
 create table if not exists markets (
   id                  text primary key,
   symbol              text not null default 'TROLL',
+  -- v53 — multi-coin support.  Foreign-keyish reference to supported_coins.mint.
+  coin_mint           text not null default '5UUH9RTDiSpq6HKS6bp4NdU9PNJpXRXuiw6ShBTBhgH2',
   question            text not null,
   schedule_type       text not null check (schedule_type in ('15m', 'hourly', 'daily')),
   target_mc           numeric not null,
@@ -81,9 +105,12 @@ create index if not exists markets_close_at_idx on markets(close_at);
 
 -- LIFECYCLE INVARIANT: at most one active market per schedule_type.
 -- The seeder enforces this in code; this partial unique index is the backstop.
-create unique index if not exists markets_one_active_per_schedule
-  on markets (schedule_type)
+create unique index if not exists markets_one_active_per_coin_schedule
+  on markets (coin_mint, schedule_type)
   where status in ('open', 'locked', 'settling');
+
+-- v53 — index for filtering markets by coin_mint
+create index if not exists markets_coin_mint_idx on markets (coin_mint);
 
 -- ============================================================================
 -- MARKET SNAPSHOTS — every poll during the close window
