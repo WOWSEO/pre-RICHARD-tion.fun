@@ -215,7 +215,7 @@ button, input { font: inherit; }
    against the predict card's left edge, and the rotate(-4deg) made the
    corners poke into the predict panel on viewports under ~1280px wide.
    Pulled further left + up so the visual is fully inside the gap. */
-.mc-card { right: clamp(560px, 47vw, 780px); top: 8%; min-width: 200px; }
+.mc-card { right: clamp(560px, 40vw, 700px); top: 4%; min-width: 200px; z-index: 12; }
 .mc-card.is-live::before { content: ""; position: absolute; top: 16px; right: 16px; width: 8px; height: 8px; border-radius: 999px; background: #00ff69; box-shadow: 0 0 12px rgba(0,255,105,.9); }
 .mc-card.is-stale::before { content: ""; position: absolute; top: 16px; right: 16px; width: 8px; height: 8px; border-radius: 999px; background: #ffb84d; box-shadow: 0 0 12px rgba(255,184,77,.8); }
 /* v25 spacing fix: YES/NO float cards repositioned so they:
@@ -224,9 +224,9 @@ button, input { font: inherit; }
    Old: right:490px top:49% / right:540px bottom:13% — caused the bottom
    card to land on top of the chart strip on tighter viewports.
    New: shift them in toward the predict card and constrain vertically. */
-.yes-float { right: clamp(420px, 42vw, 560px); top: 38%; }
+.yes-float { right: clamp(420px, 42vw, 560px); top: 28%; }
 .yes-float strong { color: #00ff69; }
-.no-float { right: clamp(470px, 46vw, 620px); top: 62%; }
+.no-float { right: clamp(470px, 46vw, 620px); top: 50%; }
 .no-float strong { color: #ff3e75; }
 
 .coin-day-section {
