@@ -109,7 +109,9 @@ button, input { font: inherit; }
    Frame total budget = 100vh.
    Nav ≈ 70px + hero (this min-height) + chart-strip (200px) + small gap. */
 /* v26: hero leaves room for the taller v26 chart strip (380px).
-   Was 320px reservation in v24; now 510px to fit the new chart card. */
+   Was 320px reservation in v24; now 510px to fit the new chart card.
+   v30: chart pulls up 120px via negative margin, so effective budget
+   below hero = 440px. */
 .classic-hero { position: relative; min-height: calc(100vh - 510px); display: grid; grid-template-columns: minmax(420px, 1fr) minmax(430px, 520px); align-items: center; gap: min(10vw, 150px); padding-top: 20px; }
 .classic-copy-card, .classic-predict-card, .classic-float-card { background: rgba(232, 230, 218, .91); border: 1px solid rgba(255,255,255,.55); box-shadow: 0 24px 90px rgba(0,0,0,.22); backdrop-filter: blur(18px) saturate(1.25); }
 .classic-copy-card { width: min(100%, 700px); border-radius: 34px; padding: clamp(34px, 5vw, 64px); }
@@ -293,17 +295,15 @@ button, input { font: inherit; }
 /* v24 chart strip — bottom-docked thin DexScreener iframe.  Sits below
    the hero, full-width, fixed height.  On desktop the hero grid shrinks
    so this strip fits in the remaining viewport without scrolling. */
-/* v29 chart strip — extends right until just before the predict card.
-   v28 reserved 670px on the right (predict + max gap), but that was too
-   conservative — the chart looked narrow/short.  v29 reserves only the
-   predict card's width itself plus a 32px breathing gap, so the chart
-   extends across the full empty bottom space. */
+/* v30 chart strip — taller (560px) and pulled up via negative margin so
+   it visually attaches to the bottom of the hero float cards instead of
+   sitting in dead space below.  Width reservation unchanged from v29. */
 .chart-strip {
   position: relative;
   z-index: 6;
-  margin: 18px 0 0;
+  margin: -120px 0 0;
   width: calc(100% - clamp(450px, 38vw, 552px));
-  height: 380px;
+  height: 560px;
   border-radius: 22px;
   overflow: hidden;
   border: 1px solid rgba(0, 255, 114, .25);
