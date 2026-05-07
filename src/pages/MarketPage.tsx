@@ -64,7 +64,7 @@ export function MarketPage() {
               {scheduleLabel(market.scheduleType)}
             </p>
             <h1 className="mt-2 font-display text-3xl font-bold leading-tight tracking-tightest text-cream-100 text-balance sm:text-4xl">
-              Will $TROLL be over{" "}
+              Will ${market.symbol} be over{" "}
               <span className="bg-yes/30 px-2 rounded">{formatMC(market.targetMc)}</span> MC at{" "}
               <span className="font-mono">
                 {new Date(market.closeAt).toLocaleString("en-US", {
@@ -86,10 +86,10 @@ export function MarketPage() {
             {/* Stats strip */}
             <div className="mt-4 grid grid-cols-3 gap-3 rounded-2xl glass-dark p-4 ring-1 ring-cream-100/10">
               <Stat label="Locks in" value={expired ? "—" : `${hh}:${mm}:${ss}`} mono />
-              <Stat label="Volume" value={market.volume.toFixed(0)} suffix="$TROLL" />
-              <Stat label="Open Interest" value={market.openInterest.toFixed(0)} suffix="$TROLL" />
-              <Stat label="qYES" value={market.yesLiquidity.toFixed(0)} mono />
-              <Stat label="qNO" value={market.noLiquidity.toFixed(0)} mono />
+              <Stat label="Volume" value={market.volume.toFixed(2)} suffix="SOL" />
+              <Stat label="Open Interest" value={market.openInterest.toFixed(2)} suffix="SOL" />
+              <Stat label="qYES" value={market.yesLiquidity.toFixed(2)} mono />
+              <Stat label="qNO" value={market.noLiquidity.toFixed(2)} mono />
               <Stat label="Status" value={market.status === "locked" ? "closed" : market.status} mono uppercase />
             </div>
 
@@ -273,7 +273,7 @@ function PositionRow({
             {position.shares.toFixed(2)} sh @ {position.averageEntryPriceCents.toFixed(2)}¢
           </p>
           <p className="text-[11px] text-cream-100/60">
-            cost {position.costBasisTroll.toFixed(2)} $TROLL · mark {markValue.toFixed(2)} ·{" "}
+            cost {position.costBasisTroll.toFixed(3)} SOL · mark {markValue.toFixed(2)} ·{" "}
             <span className={pnlClass}>
               {unreal >= 0 ? "+" : ""}
               {unreal.toFixed(2)}

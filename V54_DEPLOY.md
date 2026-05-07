@@ -1,46 +1,56 @@
-# v54 — Multi-Coin Tile UI (full ship)
+# v54.1 — Multi-Coin Tile UI (final, production-ready)
 
-## What's in this patch
+This zip **supersedes v54.0** — same parimutuel + multi-coin foundation, but with the secondary frontend bugs fixed. Use this one and discard the earlier `prerichardtion-fun-v54-tile-ui-patch.zip`.
 
-This is **v53 + v54 combined**. If you haven't deployed v53 yet, run the SQL migration first (see step 1 below). If you already shipped v53, skip step 1 — the migration is idempotent so re-running is safe but unnecessary.
+## What changed since v54.0
 
-**v54 — Tile UI (new in this patch)**
-- `src/components/CoinSelector.tsx` — three horizontal tiles, one per registered coin, each showing logo placeholder + symbol + live MC. Active tile glows green. Click switches the entire page (markets, chart, MC card) to that coin.
-- `src/hooks/useCoins.ts` — fetches `/api/coins` and caches the registry.
-- `src/hooks/useCoinTicker.ts` — generic per-coin live price/MC ticker. Replaces the old hardcoded `useTrollTicker`.
-- `src/App.tsx` — rewires `ClassicHome` to drive everything off the selected coin: hero copy, MC card label, market filter, chart embed URL.
-- `src/index.css` — adds `.coin-selector` + `.coin-tile` styles (matches existing classic-* visual language).
-- URL persistence — `?coin=USDUC` or `?coin=<mint>` lands on that coin. Switching coin updates URL via `replace`.
+**Bug fixes after audit**
+- `src/pages/MarketPage.tsx` — the market detail page was hardcoded to `$TROLL`. A USDUC market would have shown "Will $TROLL be over $25M MC..." which is wrong. Now uses `market.symbol` so the title says "Will $USDUC be over $25M MC..." correctly.
+- `src/pages/MarketPage.tsx` — Volume / Open Interest stats said `$TROLL` but with v47 SOL-only mode, the underlying value is SOL. Labels now say `SOL`.
+- `src/pages/MarketPage.tsx` — position cost basis label same fix (was "$TROLL", now "SOL").
+- `src/components/MyPositions.tsx` — total PnL header said "TROLL", now says "SOL".
+- `src/components/MyPositions.tsx` — each position row now prefixes with the coin symbol, e.g. `TROLL · 15-minute · target $58M`. Without this you couldn't tell which coin you bet on when multiple were active.
 
-**v53 — Parimutuel + multi-coin foundation (carried over)**
-- `server/db/migrations/005_multi_coin.sql` — supported_coins registry table + coin_mint column on markets
-- `src/config/coins.ts` — TROLL + USDUC + BUTT registry
-- `server/services/marketSeeder.ts` — seeds 3 coins × 3 schedules = 9 markets
-- `server/services/settlementOrchestrator.ts` — settles with the right coin's config
-- `server/routes/coins.ts` — `GET /api/coins`
-- `server/routes/markets.ts` — `GET /api/markets?coin=<mint>` filter
-- Parimutuel rewrite (settlementEngine, tradeEngine, pricingEngine)
-- 16 new parimutuel tests including the 1v1 NO-winner case that LMSR couldn't settle
-- `server/services/payoutEngine.ts` — fee-on-winners-only gate
+**API resilience improvement**
+- `src/hooks/useCoinTicker.ts` — frontend ticker now uses DexScreener's `/token-pairs/v1/solana/{mint}` endpoint as the primary source, with the legacy `/latest/dex/pairs/solana/{pair}` as a fallback. The token-pairs endpoint accepts a mint address (which we always have) instead of a pair address (which requires lookup), so it works universally for any new coin without us needing to know the pair address upfront. This matches the same canonical pair-selection logic the server uses for its own snapshots.
 
-## Verified before zip
+## What's in the patch (full list)
+
+**v53 — Parimutuel rewrite + multi-coin foundation**
+- Parimutuel settlement: winners split losers' pool 1:1, 3% fee on winners only, refunds on VOID get full stake (no fee). 16 new tests including the 1v1 NO-winner case that LMSR couldn't settle.
+- `supported_coins` registry table + `coin_mint` column on markets
+- Per-coin seeder (3 coins × 3 schedules = 9 active markets)
+- Per-coin settlement orchestrator (passes the right CoinConfig to settleMarket)
+- New `GET /api/coins` route, `?coin=<mint>` filter on `GET /api/markets`
+- `apiClient.listCoins()`, `listMarkets({coin})` for the frontend
+
+**v54 — Tile UI**
+- `CoinSelector` component (3 horizontal tiles with logo/monogram + symbol + live MC)
+- `useCoins` hook (registry fetch, cache)
+- `useCoinTicker` hook (per-coin live MC ticker)
+- `App.tsx` `ClassicHome` rewired: hero copy, MC card, chart embed, predict panel all switch with the selected coin
+- URL persistence: `?coin=USDUC` lands on USDUC, sharing works
+- CSS: `.coin-selector` + `.coin-tile` styles, mobile-responsive
+
+**v54.1 — Polish (this version)**
+- MarketPage + MyPositions coin-aware label fixes
+- useCoinTicker mint-based primary endpoint with pair-URL fallback
+
+## Verified
 
 - `npm run typecheck` — clean
 - `npm test` — 36/36 passing
 - `npm run build` — clean (full client + server)
-- CSS bundle grew ~2KB, JS bundle grew ~3KB for the v54 selector
 
 ## Deploy steps
 
-### 1. Run the SQL migration (first deploy only — idempotent if you re-run)
+### 1. Run the SQL migration in Supabase (idempotent — safe to re-run)
 
 Open Supabase → SQL Editor → paste `server/db/migrations/005_multi_coin.sql` → Run.
 
-This creates `supported_coins`, adds `coin_mint` to `markets`, replaces the unique index, and seeds TROLL + USDUC + BUTT.
-
 ### 2. Extract this zip over your repo
 
-Unzip `prerichardtion-fun-v54-tile-ui-patch.zip` and let it overwrite. Drop-in replacements; no merge.
+Drop-in replacements; no merge.
 
 ### 3. Verify locally
 
@@ -51,40 +61,27 @@ npm test
 npm run build
 ```
 
-All green expected.
-
 ### 4. Commit and push
 
 ```
 git add -A
-git commit -m "v53+v54: parimutuel + multi-coin tile UI (TROLL/USDUC/BUTT)"
+git commit -m "v53+v54.1: parimutuel + multi-coin tile UI"
 git push origin main
 ```
 
-### 5. Render auto-deploys
+### 5. Render + Vercel auto-deploy
 
-Watch Render Logs:
-- `[server] escrow-authority publicKey=H1MSe...` (boot)
+Watch Render Logs for:
 - `[seed] CREATED coin=TROLL schedule=15m id=...`
 - `[seed] CREATED coin=USDUC schedule=15m id=...`
 - `[seed] CREATED coin=BUTT schedule=15m id=...`
 
-After 1–3 ticks: `GET /api/coins` returns 3 coins. `GET /api/markets` returns ~9 active.
-
-### 6. Vercel auto-deploys frontend on push
-
 Visit your site:
-- 3 tiles below the hero copy, one per coin
-- Click USDUC tile → entire page switches to USDUC: hero copy says "$USDUC", MC card shows USDUC's MC, chart switches to USDUC, the 3 schedule slots show USDUC markets
-- Refresh the page — `?coin=USDUC` is in URL, page lands on USDUC
-- Share the URL — recipient lands on the same coin
-
-## Known limitations / planned for later
-
-- **No coin logos yet.** Each tile shows a 2-letter monogram with a deterministic color (TROLL = greenish, USDUC = bluish, BUTT = different hue). To add real logos, drop image URLs into `supported_coins.image_url` via SQL — the tile component already supports `<img>` with monogram fallback.
-- **Mobile layout.** Below 720px the tiles stack 2-wide; below 460px they stack 1-per-row. The hero copy + chart layout from existing CSS still applies.
-- **No per-coin volume aggregation in tiles.** Each tile only shows live MC. Volume across that coin's markets isn't summed (yet) — the schedule slot buttons still show per-market volume.
+- 3 tiles below the hero copy
+- Click USDUC → page switches: hero copy, MC card, chart, markets all become USDUC
+- Click into a USDUC market → detail page says "Will $USDUC be over $25M MC..." (correct)
+- Bet, see position appear under the right coin in MyPositions
 
 ## Rollback
 
-`git revert HEAD && git push`. Migration is additive. The previous deploy's frontend (single-coin) doesn't know about the registry but still works because `/api/markets` (no filter) returns all coins' markets — including legacy clients seeing 9 instead of 3 markets, which is harmless visual noise.
+`git revert HEAD && git push`. Migration is additive.

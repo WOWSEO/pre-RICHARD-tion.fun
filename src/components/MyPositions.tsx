@@ -107,7 +107,7 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
                 {" · "}
                 <b className={totalPnl >= 0 ? "pnl-up" : "pnl-down"}>
                   {totalPnl >= 0 ? "+" : ""}
-                  {totalPnl.toFixed(2)} TROLL
+                  {totalPnl.toFixed(3)} SOL
                 </b>
               </>
             )}
@@ -138,6 +138,7 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
                       {e.row.side}
                     </span>
                     <span className="my-position-market">
+                      {e.market?.symbol ? `${e.market.symbol} · ` : ""}
                       {e.market?.scheduleType === "15m"
                         ? "15-minute"
                         : e.market?.scheduleType === "hourly"
