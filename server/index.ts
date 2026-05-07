@@ -5,6 +5,7 @@ import { marketsRouter } from "./routes/markets";
 import { positionsRouter } from "./routes/positions";
 import { auditRouter } from "./routes/audit";
 import { adminRouter } from "./routes/admin";
+import { escrowAuthority } from "./services/escrowVerifier";
 
 function main(): void {
   const env = loadEnv();
@@ -70,14 +71,11 @@ function main(): void {
     console.log(
       `[server] CORS allow-list (source=${env.CORS_ORIGINS_SOURCE}, NODE_ENV=${process.env.NODE_ENV ?? "unset"}): ${env.CORS_ORIGINS.join(", ")}`,
     );
-    // v49 — log the escrow public address on boot.  Lets us verify which
+    // v51 — log the escrow public address on boot.  Lets us verify which
     // keypair is in use without exposing the secret.  After the 2026-05-07
     // incident where a leaked keypair was drained, we want to make it
     // obvious-at-a-glance which authority is currently live.
     try {
-      // Lazy require so a missing/bad ESCROW_AUTHORITY_SECRET only crashes
-      // the log line, not the whole boot.
-      const { escrowAuthority } = require("./services/escrowVerifier");
       const auth = escrowAuthority();
       console.log(
         `[server] escrow-authority publicKey=${auth.publicKey.toBase58()}`,
