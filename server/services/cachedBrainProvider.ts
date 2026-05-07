@@ -32,10 +32,12 @@ export class CachedBrainProvider implements MarketCapProvider {
 
   constructor(
     private readonly inner: MarketCapProvider,
-    /** Max age for a cache hit to count as fresh.  Default 5 min — same
-     *  TTL the seeder uses, so settlement and seeding share one freshness
-     *  window. */
-    private readonly maxCacheAgeMs: number = 5 * 60 * 1000,
+    /** Max age for a cache hit to count as fresh.  Default 30 min — bumped
+     *  from 5 in v27 to absorb DexScreener's 429 rate-limit storms during
+     *  settle.  A 25-min-old MC reading is still accurate enough for
+     *  "did MC cross target at close" given typical TROLL volatility
+     *  vs target offsets. */
+    private readonly maxCacheAgeMs: number = 30 * 60 * 1000,
     /** Cache row symbol.  Default "TROLL" — matches what marketSnapshot.ts
      *  writes. */
     private readonly symbol: string = "TROLL",

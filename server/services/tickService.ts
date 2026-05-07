@@ -1,6 +1,7 @@
 import { db, type MarketRow } from "../db/supabase";
 import { settleMarketViaWorker } from "./settlementOrchestrator";
 import { ensureOneActivePerSchedule, listActiveBySchedule } from "./marketSeeder";
+import { warmSnapshotIfStale } from "./marketSnapshot";
 import type { ScheduleType } from "../../src/market/marketTypes";
 
 /**
@@ -116,6 +117,19 @@ export async function tickMarkets(): Promise<TickResult> {
   const sb = db();
   const cutoff = new Date().toISOString();
   console.info(`[tick] BEGIN cutoff=${cutoff}`);
+
+  // v27: opportunistically refresh the snapshot cache so settle has a
+  // fresh row to fall back on when DexScreener / GeckoTerminal 429.
+  // Refresh only when cache > 60s old → at most 1 provider hit per minute
+  // from this path (well under rate limits) and settle finds a <60s-old
+  // cache entry on every settle attempt.
+  try {
+    const r = await warmSnapshotIfStale(60_000);
+    if (r.refreshed) console.info(`[tick] cache-warmed reason=${r.reason}`);
+  } catch (err) {
+    // Non-fatal: settle has its own 30-min cache fallback (also v27).
+    console.warn(`[tick] cache-warm-failed reason=${(err as Error).message}`);
+  }
 
   // ----- 0) v19 product rule: do NOT pre-fetch a tick-wide snapshot. -----
   // Each post-settle handoff and each empty-slot seed must take its OWN

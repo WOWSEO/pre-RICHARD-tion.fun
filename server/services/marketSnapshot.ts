@@ -350,3 +350,51 @@ export async function buildManualSnapshot(input: {
   );
   return snap;
 }
+
+/**
+ * v27 — opportunistic cache warmer.  Called once per tick.
+ *
+ * If the latest cache row is older than `maxAgeMs`, fires ONE live snapshot
+ * fetch (which writes the cache as a side effect).  Otherwise returns
+ * immediately without hitting providers.
+ *
+ * This dramatically reduces 429 risk during settle: by warming the cache
+ * once per tick during open windows, settlement finds a fresh cache row
+ * and never has to hit providers itself.
+ *
+ * Failures are non-fatal and silent — caller should log if needed but
+ * not error out (a single failed warm doesn't break anything; the next
+ * tick retries).  Returns whether a refresh was actually performed.
+ */
+export async function warmSnapshotIfStale(
+  maxAgeMs: number = 60_000, // default: refresh if cache > 60s old
+  symbol: string = TROLL_SYMBOL,
+): Promise<{ refreshed: boolean; reason: string }> {
+  try {
+    const sb = db();
+    const { data } = await sb
+      .from("oracle_snapshots")
+      .select("created_at")
+      .eq("symbol", symbol)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle<{ created_at: string }>();
+    if (data) {
+      const ageMs = Date.now() - new Date(data.created_at).getTime();
+      if (ageMs < maxAgeMs) {
+        return { refreshed: false, reason: `fresh ageMs=${ageMs}` };
+      }
+    }
+  } catch {
+    // fall through and try to refresh anyway
+  }
+
+  // Cache is missing or stale — try ONE live fetch.  Don't propagate errors;
+  // this is best-effort.
+  try {
+    await fetchTrollSnapshot({ symbol });
+    return { refreshed: true, reason: "ok" };
+  } catch (err) {
+    return { refreshed: false, reason: `fetch_failed: ${(err as Error).message}` };
+  }
+}

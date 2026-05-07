@@ -108,7 +108,9 @@ button, input { font: inherit; }
 /* v24: hero leaves room for the bottom-docked chart strip.
    Frame total budget = 100vh.
    Nav ≈ 70px + hero (this min-height) + chart-strip (200px) + small gap. */
-.classic-hero { position: relative; min-height: calc(100vh - 320px); display: grid; grid-template-columns: minmax(420px, 1fr) minmax(430px, 520px); align-items: center; gap: min(10vw, 150px); padding-top: 20px; }
+/* v26: hero leaves room for the taller v26 chart strip (380px).
+   Was 320px reservation in v24; now 510px to fit the new chart card. */
+.classic-hero { position: relative; min-height: calc(100vh - 510px); display: grid; grid-template-columns: minmax(420px, 1fr) minmax(430px, 520px); align-items: center; gap: min(10vw, 150px); padding-top: 20px; }
 .classic-copy-card, .classic-predict-card, .classic-float-card { background: rgba(232, 230, 218, .91); border: 1px solid rgba(255,255,255,.55); box-shadow: 0 24px 90px rgba(0,0,0,.22); backdrop-filter: blur(18px) saturate(1.25); }
 .classic-copy-card { width: min(100%, 700px); border-radius: 34px; padding: clamp(34px, 5vw, 64px); }
 .classic-eyebrow { margin: 0 0 18px; color: #006c3b; text-transform: uppercase; letter-spacing: .28em; font-weight: 950; font-size: 13px; }
@@ -291,11 +293,18 @@ button, input { font: inherit; }
 /* v24 chart strip — bottom-docked thin DexScreener iframe.  Sits below
    the hero, full-width, fixed height.  On desktop the hero grid shrinks
    so this strip fits in the remaining viewport without scrolling. */
+/* v26 chart strip — constrained to bottom-middle-left.  Was a wide
+   thin band (200px × full-width) which read as a sliver; now it's a
+   proper square-ish chart card (~720px × 380px) anchored to the left
+   so it sits cleanly in the bottom-middle-left space, leaving the
+   right portion of the bottom empty for the predict card to extend
+   down into. */
 .chart-strip {
   position: relative;
   z-index: 6;
   margin: 18px 0 0;
-  height: 200px;
+  width: min(720px, 60%);
+  height: 380px;
   border-radius: 22px;
   overflow: hidden;
   border: 1px solid rgba(0, 255, 114, .25);
@@ -333,8 +342,9 @@ button, input { font: inherit; }
   }
   .coin-day-section { grid-template-columns: 1fr; margin-top: 24px; padding: 14px; }
   .classic-copy-card h1 { font-size: clamp(48px, 16vw, 76px); }
-  /* v24 chart strip mobile — slightly taller since mobile scrolls anyway. */
-  .chart-strip { height: 260px; margin-top: 14px; }
+  /* v24 chart strip mobile — slightly taller since mobile scrolls anyway.
+     v26: full width on mobile (override the desktop max-width constraint). */
+  .chart-strip { width: 100%; height: 260px; margin-top: 14px; }
 }
 
 @media (max-width: 640px) {
