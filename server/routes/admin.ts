@@ -23,6 +23,27 @@ const requireAdmin: RequestHandler = (req, res, next) => {
   const key = req.header("x-admin-key") ?? req.header("x-admin-api-key");
   const envKey = loadEnv().ADMIN_API_KEY;
   if (!key || key !== envKey) {
+    // v50 — diagnostic logging.  When the cron returns 401, we have no
+    // way to tell whether the header is missing, the env var is missing,
+    // or both exist but differ (whitespace, length, encoding).  This logs
+    // enough to diagnose without exposing the actual secret.
+    const headerSent = !!key;
+    const envSet = !!envKey;
+    const keyLen = key?.length ?? 0;
+    const envLen = envKey?.length ?? 0;
+    const keyFingerprint = key
+      ? `${key.slice(0, 2)}…${key.slice(-2)}`
+      : "(none)";
+    const envFingerprint = envKey
+      ? `${envKey.slice(0, 2)}…${envKey.slice(-2)}`
+      : "(none)";
+    console.warn(
+      `[admin-auth] DENIED url=${req.path} ` +
+        `headerSent=${headerSent} envSet=${envSet} ` +
+        `keyLen=${keyLen} envLen=${envLen} ` +
+        `keyFp=${keyFingerprint} envFp=${envFingerprint} ` +
+        `match=${key === envKey}`,
+    );
     return res.status(401).json({ error: "unauthorized" });
   }
   next();
