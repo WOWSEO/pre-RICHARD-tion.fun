@@ -114,7 +114,7 @@ button, input { font: inherit; }
    below hero = 440px. */
 .classic-hero { position: relative; min-height: calc(100vh - 510px); display: grid; grid-template-columns: minmax(420px, 1fr) minmax(430px, 520px); align-items: center; gap: min(10vw, 150px); padding-top: 20px; }
 .classic-copy-card, .classic-predict-card, .classic-float-card { background: rgba(232, 230, 218, .91); border: 1px solid rgba(255,255,255,.55); box-shadow: 0 24px 90px rgba(0,0,0,.22); backdrop-filter: blur(18px) saturate(1.25); }
-.classic-copy-card { width: min(100%, 700px); border-radius: 34px; padding: clamp(34px, 5vw, 64px); }
+.classic-copy-card { position: relative; z-index: 11; width: min(100%, 700px); border-radius: 34px; padding: clamp(34px, 5vw, 64px); }
 .classic-eyebrow { margin: 0 0 18px; color: #006c3b; text-transform: uppercase; letter-spacing: .28em; font-weight: 950; font-size: 13px; }
 .classic-copy-card h1 { margin: 0; max-width: 570px; font-size: clamp(54px, 7vw, 96px); line-height: .84; letter-spacing: -0.085em; font-weight: 1000; color: #001a0d; }
 .classic-subcopy { margin: 28px 0 0; max-width: 520px; color: rgba(0, 28, 16, .72); font-size: 19px; line-height: 1.35; font-weight: 750; }
@@ -295,15 +295,19 @@ button, input { font: inherit; }
 /* v24 chart strip — bottom-docked thin DexScreener iframe.  Sits below
    the hero, full-width, fixed height.  On desktop the hero grid shrinks
    so this strip fits in the remaining viewport without scrolling. */
-/* v30 chart strip — taller (560px) and pulled up via negative margin so
-   it visually attaches to the bottom of the hero float cards instead of
-   sitting in dead space below.  Width reservation unchanged from v29. */
+/* v31 chart strip — fills the entire bottom-left empty zone.
+   Width: takes ALL horizontal space except what the predict card needs
+   (520px max + 20px breathing room).  On a 1920px page that's ~1024px
+   wide instead of v30's ~1032px (similar) but the visual difference is
+   the height + position.
+   Margin: negative top pulls it up against the float cards above,
+   eliminating the dead space gap. */
 .chart-strip {
   position: relative;
-  z-index: 6;
-  margin: -120px 0 0;
-  width: calc(100% - clamp(450px, 38vw, 552px));
-  height: 560px;
+  z-index: 5;
+  margin: -180px 0 0;
+  width: calc(100% - clamp(420px, 33vw, 540px));
+  height: 620px;
   border-radius: 22px;
   overflow: hidden;
   border: 1px solid rgba(0, 255, 114, .25);
