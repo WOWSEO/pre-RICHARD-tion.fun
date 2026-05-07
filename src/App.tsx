@@ -335,8 +335,19 @@ function ClassicHome() {
       setSelectedId(null);
       return;
     }
-    if (!selectedId || !activeMarkets.some((m) => m.id === selectedId)) {
-      setSelectedId(activeMarkets[0]!.id);
+    const isTradable = (m: typeof activeMarkets[number]): boolean =>
+      m.status === "open" && new Date(m.closeAt) > new Date();
+    const current = activeMarkets.find((m) => m.id === selectedId);
+    // v40: auto-advance to a tradable market when selected is missing OR no
+    // longer tradable (closed/locked).  Prefer same schedule first, then any
+    // tradable market, and finally fall back to the first market in the list.
+    if (!current || !isTradable(current)) {
+      const sameSchedule = current
+        ? activeMarkets.find((m) => m.scheduleType === current.scheduleType && isTradable(m))
+        : null;
+      const anyTradable = activeMarkets.find(isTradable);
+      const next = sameSchedule ?? anyTradable ?? activeMarkets[0];
+      if (next && next.id !== selectedId) setSelectedId(next.id);
     }
   }, [activeMarkets, selectedId]);
   const selected = activeMarkets.find((m) => m.id === selectedId) ?? null;
@@ -724,7 +735,6 @@ function ClassicHome() {
                 placeholder="0"
                 value={amountStr}
                 onChange={(e) => setAmountStr(e.target.value)}
-                disabled={!tradable}
               />
               <button
                 type="button"
