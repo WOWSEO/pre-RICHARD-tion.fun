@@ -293,16 +293,16 @@ button, input { font: inherit; }
 /* v24 chart strip — bottom-docked thin DexScreener iframe.  Sits below
    the hero, full-width, fixed height.  On desktop the hero grid shrinks
    so this strip fits in the remaining viewport without scrolling. */
-/* v28 chart strip — sits directly under the copy card on the left,
-   extending right until it nearly touches the predict card.
-   Width derived from the hero grid: predict card max-width 520px +
-   max gap 150px = 670px reserved on the right.  On narrower viewports
-   the clamp keeps a sensible floor so it doesn't squeeze too thin. */
+/* v29 chart strip — extends right until just before the predict card.
+   v28 reserved 670px on the right (predict + max gap), but that was too
+   conservative — the chart looked narrow/short.  v29 reserves only the
+   predict card's width itself plus a 32px breathing gap, so the chart
+   extends across the full empty bottom space. */
 .chart-strip {
   position: relative;
   z-index: 6;
   margin: 18px 0 0;
-  width: calc(100% - clamp(560px, 50vw, 670px));
+  width: calc(100% - clamp(450px, 38vw, 552px));
   height: 380px;
   border-radius: 22px;
   overflow: hidden;
