@@ -215,7 +215,7 @@ button, input { font: inherit; }
    against the predict card's left edge, and the rotate(-4deg) made the
    corners poke into the predict panel on viewports under ~1280px wide.
    Pulled further left + up so the visual is fully inside the gap. */
-.mc-card { right: clamp(560px, 40vw, 640px); top: 6%; min-width: 200px; z-index: 12; }
+.mc-card { right: clamp(560px, 47vw, 780px); top: 8%; min-width: 200px; }
 .mc-card.is-live::before { content: ""; position: absolute; top: 16px; right: 16px; width: 8px; height: 8px; border-radius: 999px; background: #00ff69; box-shadow: 0 0 12px rgba(0,255,105,.9); }
 .mc-card.is-stale::before { content: ""; position: absolute; top: 16px; right: 16px; width: 8px; height: 8px; border-radius: 999px; background: #ffb84d; box-shadow: 0 0 12px rgba(255,184,77,.8); }
 /* v25 spacing fix: YES/NO float cards repositioned so they:
@@ -292,18 +292,17 @@ button, input { font: inherit; }
   50% { opacity: 0.55; }
 }
 
-/* v37 chart strip — shrunk so its top edge clears the copy card's bottom.
-   v33's height was clamp(260,38vh,380) which extended too high; v37 uses
-   clamp(180,22vh,260) so the chart stays in the bottom strip area
-   without bleeding into the copy card region.  Position unchanged from
-   v36: pinned absolute to bottom-left, 60px above page floor. */
+/* v38 chart strip — absolute-pinned to frame bottom, taller to fill the
+   visible empty space.  v33 was in flow with negative margin which left
+   gaps above and below; v38 pins it absolute and grows it to fill the
+   bottom-left zone properly. */
 .chart-strip {
   position: absolute;
   z-index: 5;
   left: 28px;
   right: clamp(420px, 33vw, 540px);
-  bottom: 60px;
-  height: clamp(180px, 22vh, 260px);
+  bottom: 32px;
+  height: clamp(280px, 38vh, 460px);
   margin: 0;
   border-radius: 22px;
   overflow: hidden;
@@ -344,7 +343,7 @@ button, input { font: inherit; }
   .classic-copy-card h1 { font-size: clamp(48px, 16vw, 76px); }
   /* v24 chart strip mobile — slightly taller since mobile scrolls anyway.
      v26: full width on mobile (override the desktop max-width constraint).
-     v37: reset absolute positioning to flow on mobile. */
+     v38: reset absolute positioning back to flow on mobile. */
   .chart-strip {
     position: relative;
     left: auto; right: auto; bottom: auto;

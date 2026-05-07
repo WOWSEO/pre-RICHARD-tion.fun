@@ -580,7 +580,7 @@ function ClassicHome() {
             <p className="classic-eyebrow">$TROLL holder market</p>
             <h1>Prediction markets for $TROLL holders.</h1>
             <p className="classic-subcopy">
-              Connect your wallet, show your $TROLL balance, pick YES or NO, and sign your $TROLL entry. Markets are real, escrowed on-chain, and settled by oracle median.
+              Bet $TROLL or SOL on whether $TROLL market cap is higher or lower at the close. Pick a 15-minute, hourly, or daily window. Pick YES or NO. Win, get paid out instantly in SOL — no claims, no waiting. Markets are real, escrowed on-chain, and settled by oracle median.
             </p>
             {/* v24: no chart-link button — the embedded strip below
                 renders the live DexScreener chart on-page. */}
