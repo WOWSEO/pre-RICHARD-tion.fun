@@ -5,3 +5,30 @@ dist
 *.log
 .vite
 .DS_Store
+
+# === SECRETS — NEVER COMMIT ANY OF THESE ===
+# v49 added after escrow keypair leak via committed .env
+.env
+.env.local
+.env.development
+.env.production
+.env.*.local
+*.env
+secrets/
+secrets.json
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+*-keypair.json
+*.keypair
+solana-keypair*
+
+# Editor/OS files that occasionally pick up secrets
+.DS_Store
+.vscode/settings.json
+.idea/
+
+# Build outputs that might bundle secrets if misconfigured
+.next/
+.turbo/

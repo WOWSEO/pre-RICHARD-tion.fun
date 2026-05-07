@@ -70,6 +70,23 @@ function main(): void {
     console.log(
       `[server] CORS allow-list (source=${env.CORS_ORIGINS_SOURCE}, NODE_ENV=${process.env.NODE_ENV ?? "unset"}): ${env.CORS_ORIGINS.join(", ")}`,
     );
+    // v49 — log the escrow public address on boot.  Lets us verify which
+    // keypair is in use without exposing the secret.  After the 2026-05-07
+    // incident where a leaked keypair was drained, we want to make it
+    // obvious-at-a-glance which authority is currently live.
+    try {
+      // Lazy require so a missing/bad ESCROW_AUTHORITY_SECRET only crashes
+      // the log line, not the whole boot.
+      const { escrowAuthority } = require("./services/escrowVerifier");
+      const auth = escrowAuthority();
+      console.log(
+        `[server] escrow-authority publicKey=${auth.publicKey.toBase58()}`,
+      );
+    } catch (e) {
+      console.warn(
+        `[server] escrow-authority failed to load: ${(e as Error).message}`,
+      );
+    }
   });
 }
 
