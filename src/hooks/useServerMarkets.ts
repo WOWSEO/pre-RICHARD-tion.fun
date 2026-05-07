@@ -62,12 +62,15 @@ export function useServerMarket(
 ): {
   market: MarketDetail | null;
   escrowAccount: string | null;
+  /** v44: needed for the idempotent ATA-create instruction in TROLL deposits. */
+  escrowSolAccount: string | null;
   loading: boolean;
   error: string | null;
   refresh: () => void;
 } {
   const [market, setMarket] = useState<MarketDetail | null>(null);
   const [escrowAccount, setEscrowAccount] = useState<string | null>(null);
+  const [escrowSolAccount, setEscrowSolAccount] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -83,10 +86,11 @@ export function useServerMarket(
 
     const run = async () => {
       try {
-        const { market, escrowAccount } = await api.getMarket(marketId);
+        const { market, escrowAccount, escrowSolAccount } = await api.getMarket(marketId);
         if (cancelled) return;
         setMarket(market);
         setEscrowAccount(escrowAccount);
+        setEscrowSolAccount(escrowSolAccount ?? null);
         setError(null);
       } catch (err) {
         if (cancelled) return;
@@ -107,7 +111,7 @@ export function useServerMarket(
   }, [marketId, intervalMs, tick]);
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
-  return { market, escrowAccount, loading, error, refresh };
+  return { market, escrowAccount, escrowSolAccount, loading, error, refresh };
 }
 
 /** A wallet's pending + sent + confirmed escrow_withdrawals across all markets. */

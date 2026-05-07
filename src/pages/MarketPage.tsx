@@ -13,7 +13,7 @@ export function MarketPage() {
   const wallet = useWallet();
   const walletAddr = wallet.publicKey?.toBase58() ?? null;
 
-  const { market, escrowAccount, loading, error, refresh } = useServerMarket(marketId);
+  const { market, escrowAccount, escrowSolAccount, loading, error, refresh } = useServerMarket(marketId);
   const { withdrawals, refresh: refreshWithdrawals } = useUserWithdrawals(walletAddr);
 
   // Countdown must be called unconditionally
@@ -156,6 +156,7 @@ export function MarketPage() {
             <PredictPanel
               market={market}
               escrowAccount={escrowAccount}
+              escrowSolAccount={escrowSolAccount}
               onTradeCommitted={() => {
                 refresh();
                 refreshWithdrawals();

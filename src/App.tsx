@@ -500,8 +500,15 @@ function ClassicHome() {
           setPhase({ kind: "error", message: "VITE_TROLL_MINT is not configured." });
           return;
         }
+        if (!escrowSolAccount) {
+          // v44 — we need the authority pubkey (= escrowSolAccount) so we can
+          // include an idempotent ATA-create instruction in the deposit tx.
+          setPhase({ kind: "error", message: "Server didn't return escrow authority. Try again in a moment." });
+          return;
+        }
         const trollMint = new PublicKey(mintStr);
         const escrowAta = new PublicKey(escrowAccount!);
+        const escrowAuthorityPk = new PublicKey(escrowSolAccount);
         const decimals = await getTrollDecimals(connection, trollMint);
         console.info(`[entry/sign] troll-build decimals=${decimals}`);
         setPhase({ kind: "broadcasting" });
@@ -510,6 +517,7 @@ function ClassicHome() {
           connection,
           trollMint,
           escrowTokenAccount: escrowAta,
+          escrowAuthority: escrowAuthorityPk,
           amountUi: amount,
           decimals,
         });

@@ -7,6 +7,7 @@ import {
   LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
 import {
+  createAssociatedTokenAccountIdempotentInstruction,
   createTransferCheckedInstruction,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
@@ -29,12 +30,29 @@ export interface DepositArgs {
   connection: Connection;
   trollMint: PublicKey;
   escrowTokenAccount: PublicKey;
+  /**
+   * v44 — escrow authority pubkey (the OWNER of the escrow ATA).  Needed so we
+   * can include a `createAssociatedTokenAccountIdempotent` instruction in the
+   * deposit tx; this initializes the destination ATA on-chain if it doesn't
+   * exist yet, fixing `InvalidAccountData` from `transferChecked` against a
+   * non-existent token account.  (Server returns this as `escrowSolAccount`
+   * in /api/markets — same pubkey, dual purpose.)
+   */
+  escrowAuthority: PublicKey;
   amountUi: number;
   decimals: number;
 }
 
 export async function depositToEscrow(args: DepositArgs): Promise<string> {
-  const { wallet, connection, trollMint, escrowTokenAccount, amountUi, decimals } = args;
+  const {
+    wallet,
+    connection,
+    trollMint,
+    escrowTokenAccount,
+    escrowAuthority,
+    amountUi,
+    decimals,
+  } = args;
   if (!wallet.publicKey) throw new Error("Wallet not connected.");
   if (!wallet.signTransaction) {
     throw new Error("This wallet does not support signTransaction. Try Phantom or Solflare.");
@@ -46,6 +64,18 @@ export async function depositToEscrow(args: DepositArgs): Promise<string> {
 
   const tx = new Transaction();
   tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }));
+  // v44 — idempotent ATA create for the destination.  No-op if it already
+  // exists; otherwise creates the escrow ATA so transferChecked can succeed.
+  // Payer is the user (small rent fee, ~0.002 SOL).  Already-existing ATA
+  // returns immediately without touching state.
+  tx.add(
+    createAssociatedTokenAccountIdempotentInstruction(
+      wallet.publicKey,       // payer for rent (only on first-time init)
+      escrowTokenAccount,     // ata to create
+      escrowAuthority,        // owner
+      trollMint,              // mint
+    ),
+  );
   tx.add(
     createTransferCheckedInstruction(
       sourceAta,

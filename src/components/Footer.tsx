@@ -16,14 +16,14 @@ export function Footer({ onShowLegal }: FooterProps) {
       <div className="site-footer-inner">
         <div className="site-footer-links">
           <a
-            href="https://x.com/prerichardtion"
+            href="https://x.com/Banyan_Builds"
             target="_blank"
             rel="noopener noreferrer"
           >
             Twitter
           </a>
           <a
-            href="https://t.me/prerichardtion"
+            href="https://t.me/pre_RICHARD_tion"
             target="_blank"
             rel="noopener noreferrer"
           >

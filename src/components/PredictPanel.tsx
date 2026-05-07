@@ -36,10 +36,12 @@ type Phase =
 interface Props {
   market: MarketDetail;
   escrowAccount: string | null;
+  /** v44: escrow authority pubkey, needed for idempotent ATA-create in deposits */
+  escrowSolAccount: string | null;
   onTradeCommitted: () => void;
 }
 
-export function PredictPanel({ market, escrowAccount, onTradeCommitted }: Props) {
+export function PredictPanel({ market, escrowAccount, escrowSolAccount, onTradeCommitted }: Props) {
   const wallet = useWallet();
   const { connection } = useConnection();
   const balance = useTrollBalance();
@@ -125,6 +127,11 @@ export function PredictPanel({ market, escrowAccount, onTradeCommitted }: Props)
       setPhase({ kind: "error", message: "Server hasn't reported an escrow account yet." });
       return;
     }
+    if (!escrowSolAccount) {
+      // v44 — needed for idempotent ATA-create instruction in deposit tx
+      setPhase({ kind: "error", message: "Server hasn't reported an escrow authority yet. Try again in a moment." });
+      return;
+    }
     if (phase.kind !== "ready") return;
     if (!tradable) {
       setPhase({ kind: "error", message: "Market is closed." });
@@ -143,6 +150,7 @@ export function PredictPanel({ market, escrowAccount, onTradeCommitted }: Props)
     try {
       const trollMint = new PublicKey(mintStr);
       const escrowAta = new PublicKey(escrowAccount);
+      const escrowAuthorityPk = new PublicKey(escrowSolAccount);
 
       setPhase({ kind: "signing" });
       const decimals = await getTrollDecimals(connection, trollMint);
@@ -155,6 +163,7 @@ export function PredictPanel({ market, escrowAccount, onTradeCommitted }: Props)
         connection,
         trollMint,
         escrowTokenAccount: escrowAta,
+        escrowAuthority: escrowAuthorityPk,
         amountUi: amount,
         decimals,
       });
