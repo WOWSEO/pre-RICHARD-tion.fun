@@ -97,6 +97,7 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
       wallet: string;
       amount_troll: string;
       currency: "troll" | "sol";
+      reason: "exit" | "payout" | "refund";
       status: string;
     }>();
   if (claimErr) throw claimErr;
@@ -106,7 +107,7 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
   }
   console.info(
     `[payout] claimed id=${withdrawalId} wallet=${claimed.wallet} ` +
-      `currency=${claimed.currency} amount=${claimed.amount_troll}`,
+      `currency=${claimed.currency} reason=${claimed.reason} amount=${claimed.amount_troll}`,
   );
 
   const recipient = new PublicKey(claimed.wallet);
@@ -116,7 +117,15 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
   //
   // Internal accounting unit is "amount_troll" (legacy column name; v23
   // overloads it to mean "the SOL-equivalent at entry time" for SOL-currency
-  // rows).  Both branches honor the 3% platform fee.
+  // rows).
+  //
+  // v52 — fee-on-winners-only.
+  //   Previously, the 3% platform fee was applied to ALL withdrawals,
+  //   including refunds for VOIDed markets.  That charged users for the
+  //   platform's own inability to settle a market — bad UX.  Now the fee
+  //   only applies when reason='payout' (real win) or reason='exit' (early
+  //   sell, reserved).  Refunds (reason='refund') get the full stake back,
+  //   no fee.
   //
   //   currency = 'sol'   → SystemProgram.transfer of native lamports from
   //                       the escrow authority's system account to the user
@@ -124,7 +133,9 @@ export async function sendWithdrawal(withdrawalId: number): Promise<{
   //   currency = 'troll' → legacy SPL transferChecked path.  Preserved for
   //                       backwards compat on pre-v23 rows.
   // -------------------------------------------------------------------------
-  const PLATFORM_FEE_BPS = 300; // 3.00%
+  const PLATFORM_FEE_BPS_FULL = 300; // 3.00% on payouts/exits
+  const feeApplies = claimed.reason === "payout" || claimed.reason === "exit";
+  const PLATFORM_FEE_BPS = feeApplies ? PLATFORM_FEE_BPS_FULL : 0;
 
   if (claimed.currency === "sol") {
     // ----- SOL payout -----

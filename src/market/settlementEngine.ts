@@ -112,22 +112,14 @@ export function resolve(input: ResolverInput): ResolverOutput {
   }
 
   // ---------------------------------------------------------------------
-  // No-opposition / underfunded-escrow guard.
+  // No-opposition guard.
   //
-  // The escrow is fully funded by participant deposits — there is no
-  // external market-maker subsidy.  In LMSR, share-count > deposited-troll
-  // when shares are bought below 100c (which is always, in [1, 99]).  So
-  // if all positions are on the winning side, the brain's payout formula
-  // (shares × 1.0) demands more $TROLL than escrow can pay.
-  //
-  // Conservative rule: if either side has zero open shares at settle time,
-  // VOID with reason "no_opposition" and refund every position its cost
-  // basis.  This also covers the "single participant" case the spec asked
-  // about, and handles markets that close with zero participants (the
-  // payout loop simply iterates over no positions).
-  //
-  // We do NOT void on partial under-funding (e.g., 5 YES + 1 small NO).
-  // That's a more subtle correctness check; documented as a remaining gap.
+  // v52 update: with parimutuel pools, "underfunded escrow" is no longer
+  // a concern — the system is always solvent by construction (winner
+  // pool gets exactly the loser pool minus fees).  The remaining concern
+  // is markets where one side has zero stakes: the "winner" technically
+  // gets only their own stake back, no upside.  Some operators choose to
+  // void rather than have a meaningless 1x-payout outcome.  We void here.
   // ---------------------------------------------------------------------
   const open = market.positions.filter(
     (p) => p.status === "open" || p.status === "locked",
@@ -221,15 +213,38 @@ export async function collectSnapshotsLive(
 // ----- Payouts -----
 
 /**
- * Applies the resolver outcome to all open/locked positions in the given market.
+ * v52 — Parimutuel payouts.
  *
- *   YES wins  → YES shares pay 1.0 TROLL each, NO shares pay 0.
- *   NO wins   → NO shares pay 1.0 TROLL each, YES shares pay 0.
- *   VOID      → every position refunded its remaining cost basis. PnL=0.
+ * Three outcome paths:
  *
- * Mutates user balances and position statuses, and records market.outcome,
- * market.settlementMc, market.voidReason, market.status, market.closedAt.
+ *   YES wins → for each YES position with stake S:
+ *                grossPayout = S * (totalPool / yesPool)
+ *                netPayout   = grossPayout * (1 - PLATFORM_FEE_RATE)
+ *              NO positions get 0.
+ *
+ *   NO wins  → symmetric.
+ *
+ *   VOID     → every position refunded its full stake (no fee).
+ *
+ * The 3% platform fee is taken from the GROSS payout of winners only.
+ * Losers already lose their stake (forfeit to the pool that funds winners).
+ * VOIDs return full stake — no fee, since the platform failed to settle.
+ *
+ * Conservation:
+ *   sum(winner_net_payouts) + platform_fee = totalPool
+ * which means:
+ *   sum(winner_gross_payouts)              = totalPool
+ *   sum(winner_net_payouts)                = totalPool * (1 - feeRate)
+ *   platform_fee                           = totalPool * feeRate
+ *
+ * That's the "always solvent by construction" property of parimutuel:
+ * the total paid out is exactly the pool.  No matter how skewed the bets
+ * are, no matter what side wins, the system pays exactly what it took in.
  */
+
+/** Platform fee rate applied to winner gross payouts. 0.03 = 3%. */
+export const PLATFORM_FEE_RATE = 0.03;
+
 export function applyPayouts(
   market: Market,
   users: User[],
@@ -249,6 +264,17 @@ export function applyPayouts(
     (p) => p.status === "open" || p.status === "locked",
   );
 
+  // Compute pool totals from open positions.  Source of truth = positions,
+  // not market.amm.qYes/qNo, so even if market state drifts the payout
+  // math is correct.
+  const yesPool = open
+    .filter((p) => p.side === "YES")
+    .reduce((acc, p) => acc + p.costBasisTroll, 0);
+  const noPool = open
+    .filter((p) => p.side === "NO")
+    .reduce((acc, p) => acc + p.costBasisTroll, 0);
+  const totalPool = yesPool + noPool;
+
   for (const p of open) {
     const user = userByWallet.get(p.wallet);
     if (!user) continue;
@@ -258,13 +284,27 @@ export function applyPayouts(
     let finalStatus: "settled" | "void_refunded" = "settled";
 
     if (outcome.outcome === "VOID") {
+      // Full refund — no fee.
       payoutTroll = p.costBasisTroll;
       pnlOnSettlement = 0;
       finalStatus = "void_refunded";
     } else if (outcome.outcome === p.side) {
-      payoutTroll = p.shares * 1.0;
+      // Winner.  Gross = stake × (totalPool / winnerPool).  Net = gross × (1-fee).
+      const winnerPool = outcome.outcome === "YES" ? yesPool : noPool;
+      if (winnerPool > 0) {
+        const stakeShare = p.costBasisTroll / winnerPool;
+        const grossPayout = stakeShare * totalPool;
+        payoutTroll = grossPayout * (1 - PLATFORM_FEE_RATE);
+      } else {
+        // Defensive: outcome says YES wins but yesPool = 0?  Shouldn't
+        // happen (no_opposition would've voided in the resolver), but if
+        // we're here, refund stake to be safe.
+        payoutTroll = p.costBasisTroll;
+        finalStatus = "void_refunded";
+      }
       pnlOnSettlement = payoutTroll - p.costBasisTroll;
     } else {
+      // Loser.  Stake is forfeit to the winner pool.
       payoutTroll = 0;
       pnlOnSettlement = -p.costBasisTroll;
     }

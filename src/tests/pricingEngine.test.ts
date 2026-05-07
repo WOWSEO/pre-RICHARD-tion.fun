@@ -1,201 +1,192 @@
 import { describe, it, expect } from "vitest";
 import {
   newAmmState,
+  getRawPrices,
   getPrices,
   getPricesCents,
-  getRawPrices,
+  cost,
   costToTrade,
   sharesForBuy,
-  proceedsForSell,
   applyBuy,
-  applySell,
-  cost,
-  quoteBuyYes,
-  quoteBuyNo,
-  quoteSellYes,
-  calculatePriceImpact,
+  payoutMultiplierForBuy,
   MIN_PRICE,
   MAX_PRICE,
+  PARIMUTUEL_SENTINEL_B,
 } from "../market/pricingEngine";
-import { createMarket } from "../market/scheduler";
+import type { AmmState, Market } from "../market/marketTypes";
 
-function freshMarket(b?: number) {
-  return createMarket({
+/**
+ * v52 — parimutuel pricing engine tests.
+ *
+ * Replaces the LMSR-era tests.  The new engine is a pure parimutuel
+ * pool: prices are pool ratios, "shares" are stake units, settlement is
+ * share-of-loser-pool.
+ */
+
+function makeMarket(state: AmmState): Market {
+  return {
+    id: "test",
     symbol: "TROLL",
+    question: "test",
+    targetMc: 0,
+    closeAt: new Date(),
+    lockAt: new Date(),
+    windowSeconds: 30,
+    pollCadenceSeconds: 5,
     scheduleType: "15m",
-    closeAt: new Date(Date.now() + 5 * 60_000),
-    targetMc: 60_000_000,
-    b,
-  });
+    status: "open",
+    amm: state,
+    yesPriceCents: 50,
+    noPriceCents: 50,
+    yesLiquidity: 0,
+    noLiquidity: 0,
+    volume: 0,
+    openInterest: 0,
+    settlementMc: null,
+    outcome: null,
+    voidReason: null,
+    positions: [],
+    trades: [],
+    createdAt: new Date(),
+    closedAt: null,
+  };
 }
 
-describe("LMSR core", () => {
-  it("starts at 50/50 with prices summing to 1", () => {
+describe("parimutuel core", () => {
+  it("newAmmState starts with empty pools and sentinel b=0", () => {
     const s = newAmmState();
-    const p = getPrices(s);
-    expect(p.yes).toBeCloseTo(0.5, 12);
-    expect(p.no).toBeCloseTo(0.5, 12);
-    expect(p.yes + p.no).toBeCloseTo(1, 12);
+    expect(s.qYes).toBe(0);
+    expect(s.qNo).toBe(0);
+    expect(s.b).toBe(PARIMUTUEL_SENTINEL_B);
   });
 
-  it("YES + NO sum to 1 across many trades (clamped output too)", () => {
-    let s = newAmmState();
-    s = applyBuy(s, "YES", 250);
-    expect(getPrices(s).yes + getPrices(s).no).toBeCloseTo(1, 12);
-    s = applyBuy(s, "NO", 800);
-    expect(getPrices(s).yes + getPrices(s).no).toBeCloseTo(1, 12);
-    s = applySell(s, "YES", 100);
-    expect(getPrices(s).yes + getPrices(s).no).toBeCloseTo(1, 12);
-  });
-
-  it("sharesForBuy and costToTrade agree (round-trip)", () => {
+  it("empty market returns 50/50 raw prices", () => {
     const s = newAmmState();
-    const shares = sharesForBuy(s, "YES", 100);
-    const recoveredCost = costToTrade(s, "YES", shares);
-    expect(recoveredCost).toBeCloseTo(100, 6);
+    const p = getRawPrices(s);
+    expect(p.yes).toBeCloseTo(0.5, 9);
+    expect(p.no).toBeCloseTo(0.5, 9);
   });
 
-  it("proceedsForSell equals -costToTrade with negative delta", () => {
-    let s = newAmmState();
-    s = applyBuy(s, "YES", 200);
-    const proceeds = proceedsForSell(s, "YES", 50);
-    const direct = -costToTrade(s, "YES", -50);
-    expect(proceeds).toBeCloseTo(direct, 12);
-    expect(proceeds).toBeGreaterThan(0);
+  it("pool ratio drives display prices", () => {
+    const s: AmmState = { qYes: 75, qNo: 25, b: 0 };
+    const p = getRawPrices(s);
+    expect(p.yes).toBeCloseTo(0.75, 9);
+    expect(p.no).toBeCloseTo(0.25, 9);
   });
 
-  it("cost function is monotone in q", () => {
-    const a = cost({ qYes: 0, qNo: 0, b: 1000 });
-    const b = cost({ qYes: 100, qNo: 0, b: 1000 });
-    const c = cost({ qYes: 200, qNo: 0, b: 1000 });
-    expect(b).toBeGreaterThan(a);
-    expect(c).toBeGreaterThan(b);
+  it("getPrices clamps to [1, 99]¢ symmetrically", () => {
+    const skewed: AmmState = { qYes: 1000, qNo: 0, b: 0 };
+    const p = getPrices(skewed);
+    expect(p.yes).toBe(MAX_PRICE);
+    expect(p.no).toBe(MIN_PRICE);
+    expect(p.yes + p.no).toBeCloseTo(1.0, 9);
+  });
+
+  it("YES + NO sums to 100¢ across many states", () => {
+    const cases: Array<[number, number]> = [
+      [0, 0],
+      [10, 90],
+      [33, 67],
+      [50, 50],
+      [99, 1],
+    ];
+    for (const [qy, qn] of cases) {
+      const s: AmmState = { qYes: qy, qNo: qn, b: 0 };
+      const c = getPricesCents(s);
+      expect(c.yes + c.no).toBeCloseTo(100, 6);
+    }
+  });
+
+  it("costToTrade equals the stake amount (1:1)", () => {
+    const s = newAmmState();
+    expect(costToTrade(s, "YES", 100)).toBe(100);
+    expect(costToTrade(s, "NO", 250)).toBe(250);
+    expect(costToTrade(s, "YES", -50)).toBe(0);
+  });
+
+  it("sharesForBuy returns the stake amount (1:1)", () => {
+    const s = newAmmState();
+    expect(sharesForBuy(s, "YES", 100)).toBe(100);
+    expect(sharesForBuy(s, "NO", 0)).toBe(0);
+  });
+
+  it("applyBuy adds to the correct pool", () => {
+    const s = newAmmState();
+    const after = applyBuy(s, "YES", 50);
+    expect(after.qYes).toBe(50);
+    expect(after.qNo).toBe(0);
+    const after2 = applyBuy(after, "NO", 30);
+    expect(after2.qYes).toBe(50);
+    expect(after2.qNo).toBe(30);
+  });
+
+  it("cost() back-compat returns total pool size", () => {
+    const s: AmmState = { qYes: 30, qNo: 70, b: 0 };
+    expect(cost(s)).toBe(100);
   });
 });
 
-describe("price direction", () => {
-  it("buying YES moves YES price up", () => {
+describe("parimutuel price movement", () => {
+  it("buying YES pushes YES price up", () => {
     let s = newAmmState();
-    const before = getPrices(s).yes;
     s = applyBuy(s, "YES", 100);
-    expect(getPrices(s).yes).toBeGreaterThan(before);
-  });
-
-  it("buying NO moves NO price up (and YES down)", () => {
-    let s = newAmmState();
-    const yesBefore = getPrices(s).yes;
-    const noBefore = getPrices(s).no;
     s = applyBuy(s, "NO", 100);
-    expect(getPrices(s).no).toBeGreaterThan(noBefore);
-    expect(getPrices(s).yes).toBeLessThan(yesBefore);
+    const before = getRawPrices(s).yes;
+    s = applyBuy(s, "YES", 50);
+    const after = getRawPrices(s).yes;
+    expect(after).toBeGreaterThan(before);
   });
 
-  it("selling YES moves YES price down", () => {
+  it("buying NO pushes NO price up", () => {
     let s = newAmmState();
-    s = applyBuy(s, "YES", 200);
-    const before = getPrices(s).yes;
-    s = applySell(s, "YES", 50);
-    expect(getPrices(s).yes).toBeLessThan(before);
+    s = applyBuy(s, "YES", 100);
+    s = applyBuy(s, "NO", 100);
+    const before = getRawPrices(s).no;
+    s = applyBuy(s, "NO", 50);
+    const after = getRawPrices(s).no;
+    expect(after).toBeGreaterThan(before);
   });
 
-  it("selling NO moves NO price down (and YES up)", () => {
+  it("buying YES pushes NO price down by exactly the same amount (zero-sum)", () => {
     let s = newAmmState();
-    s = applyBuy(s, "NO", 200);
-    const yesBefore = getPrices(s).yes;
-    const noBefore = getPrices(s).no;
-    s = applySell(s, "NO", 50);
-    expect(getPrices(s).no).toBeLessThan(noBefore);
-    expect(getPrices(s).yes).toBeGreaterThan(yesBefore);
+    s = applyBuy(s, "YES", 100);
+    s = applyBuy(s, "NO", 100);
+    const before = getRawPrices(s);
+    s = applyBuy(s, "YES", 50);
+    const after = getRawPrices(s);
+    const yesDelta = after.yes - before.yes;
+    const noDelta = after.no - before.no;
+    expect(yesDelta).toBeCloseTo(-noDelta, 9);
   });
 });
 
-describe("price clamp [1¢, 99¢]", () => {
-  it("displayed YES price never goes above 99¢ even with extreme YES imbalance", () => {
-    // With b=1000, raw price reaches 99% at qY-qN ≈ 1000 * ln(99) ≈ 4595.
-    // Buy 50,000 TROLL of YES — way more than enough.
-    let s = newAmmState(1000);
-    const shares = sharesForBuy(s, "YES", 50_000);
-    s = applyBuy(s, "YES", shares);
-    const raw = getRawPrices(s);
-    const clamped = getPrices(s);
-    // Sanity: the raw probability is over 99% in this state.
-    expect(raw.yes).toBeGreaterThan(0.99);
-    // But the clamped/displayed value never exceeds 99¢.
-    expect(clamped.yes).toBeLessThanOrEqual(MAX_PRICE);
-    expect(clamped.yes).toBeCloseTo(MAX_PRICE, 12);
+describe("payout multiplier", () => {
+  it("balanced market: betting on either side yields ~2x", () => {
+    let s = newAmmState();
+    s = applyBuy(s, "YES", 1000);
+    s = applyBuy(s, "NO", 1000);
+    const m = makeMarket(s);
+    const yesMult = payoutMultiplierForBuy(m, "YES", 1);
+    const noMult = payoutMultiplierForBuy(m, "NO", 1);
+    expect(yesMult).toBeCloseTo(2.0, 1);
+    expect(noMult).toBeCloseTo(2.0, 1);
   });
 
-  it("displayed NO price never goes below 1¢ in the same scenario", () => {
-    let s = newAmmState(1000);
-    const shares = sharesForBuy(s, "YES", 50_000);
-    s = applyBuy(s, "YES", shares);
-    const clamped = getPrices(s);
-    expect(clamped.no).toBeGreaterThanOrEqual(MIN_PRICE);
-    expect(clamped.no).toBeCloseTo(MIN_PRICE, 12);
+  it("favorite (heavy side) yields lower multiplier", () => {
+    let s = newAmmState();
+    s = applyBuy(s, "YES", 900);
+    s = applyBuy(s, "NO", 100);
+    const m = makeMarket(s);
+    const yesMult = payoutMultiplierForBuy(m, "YES", 10);
+    const noMult = payoutMultiplierForBuy(m, "NO", 10);
+    expect(yesMult).toBeLessThan(1.5);
+    expect(noMult).toBeGreaterThan(5.0);
   });
 
-  it("after clamp, YES + NO still equals exactly 1.0 (clamp is symmetric)", () => {
-    let s = newAmmState(1000);
-    s = applyBuy(s, "YES", sharesForBuy(s, "YES", 50_000));
-    const p = getPrices(s);
-    expect(p.yes + p.no).toBeCloseTo(1, 12);
-  });
-
-  it("getPricesCents stays in [1, 99] regardless of imbalance", () => {
-    let s = newAmmState(1000);
-    s = applyBuy(s, "NO", sharesForBuy(s, "NO", 80_000));
-    const cents = getPricesCents(s);
-    expect(cents.yes).toBeGreaterThanOrEqual(1);
-    expect(cents.yes).toBeLessThanOrEqual(99);
-    expect(cents.no).toBeGreaterThanOrEqual(1);
-    expect(cents.no).toBeLessThanOrEqual(99);
-  });
-});
-
-describe("slippage / price impact", () => {
-  it("larger buys produce more slippage than smaller buys", () => {
-    const market = freshMarket();
-    const small = quoteBuyYes(market, 50);
-    const large = quoteBuyYes(market, 500);
-    expect(calculatePriceImpact(large)).toBeGreaterThan(
-      calculatePriceImpact(small),
-    );
-    // Effective avg price for the bigger buy is also worse (higher).
-    expect(large.avgPriceCents).toBeGreaterThan(small.avgPriceCents);
-  });
-
-  it("bigger b means smaller slippage for the same-size buy", () => {
-    const lowB = freshMarket(100);
-    const highB = freshMarket(10_000);
-    const small = quoteBuyYes(lowB, 100);
-    const big = quoteBuyYes(highB, 100);
-    expect(calculatePriceImpact(small)).toBeGreaterThan(
-      calculatePriceImpact(big),
-    );
-  });
-
-  it("price impact is positive on a buy and negative on a sell", () => {
-    const market = freshMarket();
-    const buyQ = quoteBuyYes(market, 100);
-    expect(buyQ.priceImpactCents).toBeGreaterThan(0);
-    // Push qY up so we can sell some
-    const m2 = createMarket({
-      symbol: "TROLL",
-      scheduleType: "15m",
-      closeAt: new Date(Date.now() + 5 * 60_000),
-      targetMc: 60_000_000,
-    });
-    m2.amm = applyBuy(m2.amm, "YES", 200);
-    const sellQ = quoteSellYes(m2, 50);
-    expect(sellQ.priceImpactCents).toBeLessThan(0);
-  });
-
-  it("quote functions do not mutate market state", () => {
-    const m = freshMarket();
-    const ammBefore = { ...m.amm };
-    quoteBuyYes(m, 100);
-    quoteBuyNo(m, 100);
-    quoteSellYes({ ...m, amm: { ...m.amm, qYes: 100 } }, 50);
-    expect(m.amm).toEqual(ammBefore);
+  it("empty market: betting alone gives ~1x (no upside if no opponent)", () => {
+    const s = newAmmState();
+    const m = makeMarket(s);
+    const mult = payoutMultiplierForBuy(m, "YES", 100);
+    expect(mult).toBeCloseTo(1.0, 6);
   });
 });
