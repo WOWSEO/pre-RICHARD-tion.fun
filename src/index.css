@@ -112,7 +112,7 @@ button, input { font: inherit; }
    Was 320px reservation in v24; now 510px to fit the new chart card.
    v30: chart pulls up 120px via negative margin, so effective budget
    below hero = 440px. */
-.classic-hero { position: relative; min-height: calc(100vh - 510px); display: grid; grid-template-columns: minmax(420px, 1fr) minmax(430px, 520px); align-items: center; gap: min(10vw, 150px); padding-top: 20px; }
+.classic-hero { position: relative; min-height: calc(100vh - 510px); display: grid; grid-template-columns: minmax(420px, 1fr) minmax(430px, 520px); align-items: start; gap: min(10vw, 150px); padding-top: 20px; }
 .classic-copy-card, .classic-predict-card, .classic-float-card { background: rgba(232, 230, 218, .91); border: 1px solid rgba(255,255,255,.55); box-shadow: 0 24px 90px rgba(0,0,0,.22); backdrop-filter: blur(18px) saturate(1.25); }
 .classic-copy-card { position: relative; z-index: 11; width: min(100%, 700px); border-radius: 34px; padding: clamp(34px, 5vw, 64px); }
 .classic-eyebrow { margin: 0 0 18px; color: #006c3b; text-transform: uppercase; letter-spacing: .28em; font-weight: 950; font-size: 13px; }
@@ -357,4 +357,204 @@ button, input { font: inherit; }
   .coin-day-chart, .coin-day-chart iframe { min-height: 420px; }
   .classic-actions { gap: 8px; }
   .classic-nav-pill { padding: 10px 12px; }
+}
+
+/* v42 — MyPositions panel: floating card in the empty zone below the
+   predict card.  Absolute-positioned so it doesn't affect the hero
+   layout.  Collapsible header + list rows showing live P/L. */
+.my-positions {
+  position: absolute;
+  z-index: 11;
+  right: 28px;
+  bottom: clamp(440px, 50vh, 540px); /* sits above the chart */
+  width: min(100%, 520px);
+  background: rgba(232, 230, 218, .92);
+  border: 1px solid rgba(255,255,255,.55);
+  box-shadow: 0 18px 60px rgba(0,0,0,.22);
+  backdrop-filter: blur(14px) saturate(1.2);
+  border-radius: 22px;
+  overflow: hidden;
+  pointer-events: auto;
+}
+.my-positions-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: #001a0d;
+  font-weight: 900;
+  text-align: left;
+  font-size: 15px;
+}
+.my-positions-toggle small {
+  font-weight: 700;
+  font-size: 13px;
+  color: rgba(0, 26, 13, .68);
+}
+.my-positions-caret { font-size: 11px; opacity: .6; }
+.my-positions-body { padding: 0 12px 14px; }
+.my-positions-empty {
+  margin: 6px 8px 4px;
+  font-size: 13px;
+  color: rgba(0, 26, 13, .7);
+}
+.my-positions-error { color: #b8324d; }
+.my-positions-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.my-position-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 14px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .55);
+  border: 1px solid rgba(0, 26, 13, .08);
+}
+.my-position-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.my-position-side {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 1000;
+  letter-spacing: .04em;
+}
+.my-position-side.side-yes { background: rgba(0, 255, 105, .25); color: #006a30; }
+.my-position-side.side-no  { background: rgba(255, 62, 117, .22); color: #a30c2f; }
+.my-position-market { font-size: 13px; color: rgba(0, 26, 13, .76); font-weight: 700; }
+.my-position-numbers {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(0, 26, 13, .72);
+  font-variant-numeric: tabular-nums;
+}
+.my-position-numbers b { color: #001a0d; font-weight: 900; }
+.pnl-up { color: #006a30; }
+.pnl-down { color: #b8324d; }
+
+/* v42 — site footer: thin bar at the bottom of the page, above the
+   page edge.  Absolute-positioned so it doesn't push other content. */
+.site-footer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  padding: 8px 28px;
+  background: rgba(0, 18, 12, .68);
+  backdrop-filter: blur(8px);
+  border-top: 1px solid rgba(0, 255, 114, .14);
+  pointer-events: auto;
+}
+.site-footer-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1640px;
+  margin: 0 auto;
+  font-size: 12px;
+}
+.site-footer-links, .site-footer-legal {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+}
+.site-footer a, .site-footer button {
+  background: transparent;
+  border: 0;
+  color: rgba(255, 243, 228, .7);
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  letter-spacing: .03em;
+}
+.site-footer a:hover, .site-footer button:hover { color: #00ff69; }
+
+/* v42 — legal modal */
+.legal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 8, 5, .78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.legal-modal {
+  width: min(100%, 720px);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: #fdfbf2;
+  color: #001a0d;
+  border-radius: 22px;
+  overflow: hidden;
+  box-shadow: 0 32px 100px rgba(0,0,0,.5);
+}
+.legal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(0, 26, 13, .1);
+  background: rgba(0, 26, 13, .04);
+}
+.legal-tabs button {
+  background: transparent;
+  border: 0;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-weight: 900;
+  font-size: 13px;
+  cursor: pointer;
+  color: rgba(0, 26, 13, .68);
+}
+.legal-tabs button.active { background: #001a0d; color: #00ff69; }
+.legal-tabs .legal-close {
+  margin-left: auto;
+  font-size: 22px;
+  line-height: 1;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.legal-content {
+  padding: 24px 28px 32px;
+  overflow-y: auto;
+  font-size: 14px;
+  line-height: 1.55;
+}
+.legal-content h2 { margin: 0 0 14px; font-size: 22px; letter-spacing: -0.02em; }
+.legal-content h3 { margin: 22px 0 8px; font-size: 15px; }
+.legal-content p, .legal-content ul, .legal-content ol { margin: 0 0 10px; }
+.legal-content ul, .legal-content ol { padding-left: 22px; }
+.legal-content li { margin-bottom: 6px; }
+.legal-content a { color: #006a30; }
+
+/* Adjust chart bottom to leave room for the footer (24px footer height). */
+.chart-strip { bottom: 56px !important; }
+
+@media (max-width: 1050px) {
+  .my-positions {
+    position: relative;
+    right: auto; bottom: auto;
+    width: 100%;
+    margin: 18px 0 0;
+  }
+  .site-footer-inner { flex-direction: column; gap: 8px; }
+  .chart-strip { bottom: auto !important; }
 }

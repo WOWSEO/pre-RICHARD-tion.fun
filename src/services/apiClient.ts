@@ -93,6 +93,26 @@ export interface WirePosition {
   status: "open" | "closed" | "locked" | "settled" | "void_refunded";
 }
 
+/**
+ * v42: shape returned by GET /api/positions?wallet=... — note this is the
+ * raw snake_case row from the positions table (the server doesn't transform
+ * this list endpoint), not the camelCase WirePosition assembled inside
+ * market detail responses.
+ */
+export interface UserPositionRow {
+  id: string;
+  market_id: string;
+  wallet: string;
+  side: "YES" | "NO";
+  shares: string;                      // numeric stored as string
+  average_entry_price_cents: string;
+  cost_basis_troll: string;
+  realized_pnl_troll: string;
+  status: "open" | "closed" | "locked" | "settled" | "void_refunded";
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WireTrade {
   id: string;
   wallet: string;
@@ -207,7 +227,7 @@ export const api = {
     }),
 
   myPositions: (wallet: string) =>
-    call<{ positions: unknown[] }>(`/positions?wallet=${encodeURIComponent(wallet)}`),
+    call<{ positions: UserPositionRow[] }>(`/positions?wallet=${encodeURIComponent(wallet)}`),
 
   myWithdrawals: (wallet: string) =>
     call<{ withdrawals: WireWithdrawal[] }>(

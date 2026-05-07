@@ -4,6 +4,9 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { PublicKey } from "@solana/web3.js";
 import { WalletConnectButton } from "./components/WalletConnectButton";
+import { MyPositions } from "./components/MyPositions";
+import { Footer } from "./components/Footer";
+import { Legal, type LegalPage } from "./components/Legal";
 import { AdminPage } from "./pages/AdminPage";
 import { MarketPage } from "./pages/MarketPage";
 import { AuditPage } from "./pages/AuditPage";
@@ -361,6 +364,11 @@ function ClassicHome() {
 
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
 
+  // v42: bumped after a successful entry, so MyPositions re-fetches
+  // immediately to show the new position.
+  const [positionsRefetchKey, setPositionsRefetchKey] = useState(0);
+  const [legalPage, setLegalPage] = useState<LegalPage | null>(null);
+
   // v17: tradability is gated on closeAt, not lockAt — users can predict
   // any time before close, even in the final seconds.
   const tradable = !!selected && selected.status === "open" && new Date(selected.closeAt) > new Date();
@@ -524,6 +532,7 @@ function ClassicHome() {
 
       setPhase({ kind: "ok", positionId: result.positionId });
       setAmountStr("");
+      setPositionsRefetchKey((k) => k + 1); // v42 trigger MyPositions refresh
       window.setTimeout(() => navigate(`/market/${selected.id}`), 1500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Sign-in failed";
@@ -783,6 +792,13 @@ function ClassicHome() {
           </aside>
         </section>
 
+        {/* v42: connected user's open positions with live P/L. */}
+        <MyPositions
+          walletAddress={wallet.publicKey?.toBase58() ?? null}
+          markets={allMarkets}
+          refetchKey={positionsRefetchKey}
+        />
+
         {/* v24: thin DexScreener strip docked to the bottom of the viewport.
             v21 removed the full chart section to enforce one-page; v24
             brings back a compact 200px-tall strip that fits in the
@@ -797,6 +813,10 @@ function ClassicHome() {
           />
         </section>
       </div>
+
+      {/* v42: footer with social + legal links + legal modal */}
+      <Footer onShowLegal={(p) => setLegalPage(p)} />
+      <Legal page={legalPage} onClose={() => setLegalPage(null)} onSwitch={(p) => setLegalPage(p)} />
     </main>
   );
 }
