@@ -292,23 +292,20 @@ button, input { font: inherit; }
   50% { opacity: 0.55; }
 }
 
-/* v24 chart strip — bottom-docked thin DexScreener iframe.  Sits below
-   the hero, full-width, fixed height.  On desktop the hero grid shrinks
-   so this strip fits in the remaining viewport without scrolling. */
-/* v34 chart strip — absolute-positioned in frame, pinned to bottom.
-   v33 was in flow with negative margin; that interacted badly with the
-   classic-page's overflow:hidden + 100vh cap when the predict card grew
-   tall enough to push the hero past min-height.  v34 pins the chart to
-   the frame's bottom-left so it's always inside the visible viewport,
-   regardless of hero contents.  Top edge is computed relative to viewport
-   so it sits below the float cards. */
+/* v36 chart strip — absolute-positioned, pinned to bottom with a clear
+   gap above the viewport edge so the rounded bottom corners are always
+   visible.  v33 used negative-margin flow positioning which interacted
+   with classic-page's overflow:hidden + 100vh cap and clipped the chart
+   bottom on tall predict cards.  v36: bottom: 60px puts the chart's
+   bottom edge well above the page floor regardless of how tall the
+   hero grows. */
 .chart-strip {
   position: absolute;
   z-index: 5;
   left: 28px;                          /* matches frame's left padding */
   right: clamp(420px, 33vw, 540px);    /* clears predict card column */
-  bottom: 32px;                        /* matches frame's bottom padding */
-  height: clamp(220px, 32vh, 360px);   /* viewport-relative, fits any monitor */
+  bottom: 60px;                        /* clear gap above viewport bottom */
+  height: clamp(220px, 30vh, 340px);
   margin: 0;
   border-radius: 22px;
   overflow: hidden;
@@ -349,7 +346,7 @@ button, input { font: inherit; }
   .classic-copy-card h1 { font-size: clamp(48px, 16vw, 76px); }
   /* v24 chart strip mobile — slightly taller since mobile scrolls anyway.
      v26: full width on mobile (override the desktop max-width constraint).
-     v34: revert absolute positioning for mobile flow. */
+     v36: reset absolute positioning back to flow for mobile. */
   .chart-strip {
     position: relative;
     left: auto; right: auto; bottom: auto;
