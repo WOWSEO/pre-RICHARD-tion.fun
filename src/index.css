@@ -295,19 +295,19 @@ button, input { font: inherit; }
 /* v24 chart strip — bottom-docked thin DexScreener iframe.  Sits below
    the hero, full-width, fixed height.  On desktop the hero grid shrinks
    so this strip fits in the remaining viewport without scrolling. */
-/* v31 chart strip — fills the entire bottom-left empty zone.
-   Width: takes ALL horizontal space except what the predict card needs
-   (520px max + 20px breathing room).  On a 1920px page that's ~1024px
-   wide instead of v30's ~1032px (similar) but the visual difference is
-   the height + position.
-   Margin: negative top pulls it up against the float cards above,
-   eliminating the dead space gap. */
+/* v32 chart strip — fills the bottom-left empty zone WITHOUT bleeding off
+   the bottom of the viewport.  v31 was 620px tall pulled up 180px which
+   meant the chart's bottom edge sat below the viewport on standard
+   monitors.  v32: 460px tall, pulled up 280px → visible footprint of
+   ~180px below the hero (always in viewport) + 280px overlapping into
+   the dead zone under the YES/NO float cards (which sit on z:6, above
+   chart's z:5, so they remain visible). */
 .chart-strip {
   position: relative;
   z-index: 5;
-  margin: -180px 0 0;
+  margin: -280px 0 0;
   width: calc(100% - clamp(420px, 33vw, 540px));
-  height: 620px;
+  height: 460px;
   border-radius: 22px;
   overflow: hidden;
   border: 1px solid rgba(0, 255, 114, .25);
