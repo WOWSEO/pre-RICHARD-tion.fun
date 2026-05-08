@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Route, Routes, Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
@@ -394,14 +394,27 @@ function ClassicHome() {
   // any time before close, even in the final seconds.
   const tradable = !!selected && selected.status === "open" && new Date(selected.closeAt) > new Date();
 
+  // v55 — coalesce quote requests by (marketId, side, amount).  Re-renders
+  // with unchanged inputs (e.g. parent state ticking on the timer) would
+  // otherwise re-fire the effect and spam the /quote endpoint.  Compare
+  // against the last-issued request and skip if identical.
+  const lastQuoteKeyRef = useRef<string | null>(null);
+
   // Auto-quote whenever (selected, side, amount) settle.
   useEffect(() => {
     if (!selected || !tradable || amount <= 0) {
       setPhase({ kind: "idle" });
+      lastQuoteKeyRef.current = null;
+      return;
+    }
+    const key = `${selected.id}|${side}|${amount}`;
+    if (key === lastQuoteKeyRef.current) {
+      // Same request already in flight or already resolved — no-op.
       return;
     }
     let cancelled = false;
     const t = setTimeout(async () => {
+      lastQuoteKeyRef.current = key;
       setPhase({ kind: "quoting" });
       console.info(
         `[entry/quote] requesting market=${selected.id} side=${side} amount=${amount}`,
@@ -424,7 +437,7 @@ function ClassicHome() {
           setPhase({ kind: "error", message: msg });
         }
       }
-    }, 250);
+    }, 400);
     return () => {
       cancelled = true;
       clearTimeout(t);

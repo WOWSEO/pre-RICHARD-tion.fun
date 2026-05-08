@@ -7,6 +7,7 @@ import { useCountdown } from "../hooks/useCountdown";
 import { formatMC } from "../services/marketData";
 import { ClaimablePayouts } from "../components/ClaimablePayouts";
 import { api, type WirePosition, type MarketDetail } from "../services/apiClient";
+import { signExitIntent } from "../services/walletMessage";
 
 export function MarketPage() {
   const { marketId } = useParams<{ marketId: string }>();
@@ -249,10 +250,24 @@ function PositionRow({
     setExiting(true);
     setError(null);
     try {
-      await api.exit(position.id, { wallet: wallet.publicKey.toBase58() });
+      // v55 — sign before exit.  See MyPositions for context.
+      const walletAddr = wallet.publicKey.toBase58();
+      const timestamp = Date.now();
+      const signed = await signExitIntent(wallet, {
+        wallet: walletAddr,
+        positionId: position.id,
+        sharesToSell: "all",
+        timestamp,
+      });
+      await api.exit(position.id, {
+        wallet: walletAddr,
+        signature: signed.signature,
+        timestamp,
+      });
       onExited();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Exit failed");
+      const msg = err instanceof Error ? err.message : "Exit failed";
+      setError(/reject|denied|cancel/i.test(msg) ? "You cancelled the signature." : msg);
     } finally {
       setExiting(false);
     }

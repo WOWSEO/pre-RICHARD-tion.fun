@@ -247,9 +247,21 @@ export const api = {
       body: JSON.stringify(args),
     }),
 
+  /**
+   * Wallet-signed exit (v55).  Caller must produce `signature` and
+   * `timestamp` via `signExitIntent` from walletMessage.ts.  The server
+   * rebuilds the canonical message and verifies the ed25519 signature
+   * against the wallet's pubkey before any DB work.  Without this, anyone
+   * who learned a position UUID could force-exit a stranger's bet.
+   */
   exit: (
     positionId: string,
-    args: { wallet: string; sharesToSell?: number },
+    args: {
+      wallet: string;
+      sharesToSell?: number;
+      signature: string;
+      timestamp: number;
+    },
   ) =>
     call<{
       ok: boolean;

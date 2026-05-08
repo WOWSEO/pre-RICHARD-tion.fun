@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
 import type { MarketSummary, UserPositionRow } from "../services/apiClient";
 import { api } from "../services/apiClient";
+import { signExitIntent } from "../services/walletMessage";
 
 /**
  * v42 — open positions panel.  Lists every open position the connected
@@ -36,6 +38,7 @@ interface Enriched {
 }
 
 export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsProps) {
+  const wallet = useWallet();
   const [rows, setRows] = useState<UserPositionRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +74,9 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
   // v54.4 — handle the Exit click.  Confirms with the user (3% fee is
   // applied at withdrawal, so it's irreversible), calls the existing
   // /api/positions/:id/exit endpoint, then refreshes the list.
+  // v55 — caller now signs the exit intent before posting.  This proves
+  // wallet ownership server-side and prevents griefing where an attacker
+  // who learned a position UUID could force-exit a stranger's bet.
   const onExit = useCallback(
     async (positionId: string, costBasis: number) => {
       if (!walletAddress) return;
@@ -80,19 +86,39 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
         `Exit this position?\n\n` +
           `Stake (gross): ${grossRefund.toFixed(4)} SOL\n` +
           `You receive (net of 3% fee): ${netRefund.toFixed(4)} SOL\n\n` +
+          `Your wallet will prompt you to sign a message to authorize the exit.\n` +
+          `No SOL leaves your wallet for the signing step itself.\n\n` +
           `Exits cannot be undone.`,
       );
       if (!ok) return;
       setExitState((s) => ({ ...s, [positionId]: { busy: true, error: null } }));
       try {
-        await api.exit(positionId, { wallet: walletAddress });
+        // Sign the canonical exit intent.  Wallet popup appears here.
+        const timestamp = Date.now();
+        const signed = await signExitIntent(wallet, {
+          wallet: walletAddress,
+          positionId,
+          sharesToSell: "all",
+          timestamp,
+        });
+        await api.exit(positionId, {
+          wallet: walletAddress,
+          signature: signed.signature,
+          timestamp,
+        });
         setExitState((s) => ({ ...s, [positionId]: { busy: false, error: null } }));
         await refresh();
       } catch (e) {
-        setExitState((s) => ({ ...s, [positionId]: { busy: false, error: (e as Error).message } }));
+        const msg = (e as Error).message ?? "Exit failed";
+        // Friendlier copy for the common case where the user clicks "Cancel"
+        // in the wallet popup.
+        const friendly = /reject|denied|cancel/i.test(msg)
+          ? "You cancelled the signature."
+          : msg;
+        setExitState((s) => ({ ...s, [positionId]: { busy: false, error: friendly } }));
       }
     },
-    [walletAddress, refresh],
+    [walletAddress, wallet, refresh],
   );
 
   const enriched: Enriched[] = useMemo(() => {

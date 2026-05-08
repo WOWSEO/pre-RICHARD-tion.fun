@@ -5,16 +5,25 @@ import { sellYes, sellNo } from "../../src/market/tradeEngine";
 import { isTradingAllowed, tick } from "../../src/market/scheduler";
 import { marketToWire } from "./markets";
 import { sendWithdrawal } from "../services/payoutEngine";
+import { verifyWalletSignature, buildExitMessage } from "../util/walletSignature";
 
 export const positionsRouter = Router();
 
 const MAX_LOCK_RETRIES = 3;
+/** Reject signed messages older than this — replay-attack window. */
+const EXIT_SIGNATURE_MAX_AGE_MS = 5 * 60 * 1000;
 
 /* ========================================================================== */
 /* POST /api/positions/:id/exit                                                */
-/* { wallet, sharesToSell?: number }   — defaults to full exit                 */
+/* { wallet, sharesToSell?, signature, timestamp }                            */
+/*                                                                            */
+/* v55 — wallet signature now required.  Caller signs the canonical exit     */
+/* message client-side and posts the base64 signature alongside the request. */
+/* Server rebuilds the message from the request fields and verifies the     */
+/* signature against the wallet's pubkey before doing anything else.        */
 /*                                                                            */
 /* Steps:                                                                     */
+/*   0. Verify wallet signature over (wallet, positionId, shares, timestamp) */
 /*   1. Validate caller owns the position                                     */
 /*   2. Check trading allowed (lock window not entered)                       */
 /*   3. Run brain sellYes/sellNo                                              */
@@ -27,8 +36,41 @@ const MAX_LOCK_RETRIES = 3;
 positionsRouter.post("/:id/exit", async (req, res, next) => {
   const sb = db();
   try {
-    const { wallet, sharesToSell } = req.body as { wallet?: string; sharesToSell?: number };
+    const { wallet, sharesToSell, signature, timestamp } = req.body as {
+      wallet?: string;
+      sharesToSell?: number;
+      signature?: string;
+      timestamp?: number;
+    };
     if (!wallet) return res.status(400).json({ error: "missing_wallet" });
+    if (!signature) return res.status(400).json({ error: "missing_signature" });
+    if (typeof timestamp !== "number") return res.status(400).json({ error: "missing_timestamp" });
+
+    // 0) Reject stale signatures — replay-attack window.  An attacker who
+    // intercepts a valid signature can't reuse it past 5 minutes.
+    const age = Date.now() - timestamp;
+    if (age < -60_000 || age > EXIT_SIGNATURE_MAX_AGE_MS) {
+      return res.status(401).json({ error: "signature_expired", ageMs: age });
+    }
+
+    // 0b) Rebuild the canonical message from the request fields and verify
+    // the signature is valid for the claimed wallet.  If the client lied
+    // about anything (positionId, shares, timestamp, wallet), the signature
+    // won't verify and we reject before any DB work.
+    const canonicalMessage = buildExitMessage({
+      wallet,
+      positionId: req.params.id!,
+      sharesToSell: sharesToSell != null ? sharesToSell : "all",
+      timestamp,
+    });
+    const sigOk = verifyWalletSignature({
+      wallet,
+      message: canonicalMessage,
+      signature,
+    });
+    if (!sigOk) {
+      return res.status(401).json({ error: "invalid_signature" });
+    }
 
     let lastErr: Error | null = null;
     for (let attempt = 0; attempt < MAX_LOCK_RETRIES; attempt++) {
