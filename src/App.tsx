@@ -579,6 +579,38 @@ function ClassicHome() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Sign-in failed";
       console.warn(`[entry/sign] error market=${selected.id} reason=${msg}`);
+
+      // v56.3 — the bet may have actually gone through despite the error
+      // response.  /enter does verify-then-book; if it crashes between
+      // booking the position and sending us the response, we get an
+      // error here while a real position lives in the DB.  Re-clicking
+      // would double-spend.  Poll the positions endpoint for ~6 seconds
+      // before declaring failure.
+      try {
+        const walletAddr = wallet.publicKey?.toBase58() ?? null;
+        if (walletAddr && selected) {
+          for (let i = 0; i < 4; i++) {
+            await new Promise((r) => setTimeout(r, 1500));
+            const r = await api.myPositions(walletAddr);
+            const found = (r.positions ?? []).find(
+              (p) => p.market_id === selected.id && p.side === side && p.status === "open",
+            );
+            if (found) {
+              console.info(
+                `[entry/sign] error-recovery: found position ${found.id} despite error; treating as success`,
+              );
+              setPhase({ kind: "ok", positionId: found.id });
+              setAmountStr("");
+              setPositionsRefetchKey((k) => k + 1);
+              window.setTimeout(() => navigate(`/market/${selected.id}`), 1500);
+              return;
+            }
+          }
+        }
+      } catch (pollErr) {
+        console.warn(`[entry/sign] error-recovery poll failed:`, pollErr);
+      }
+
       setPhase({ kind: "error", message: msg });
     }
   };
@@ -686,8 +718,13 @@ function ClassicHome() {
             <span>moves against YES</span>
           </div>
 
-          {/* Predict card — same classes, same layout.  Real backend data. */}
-          <aside className="classic-predict-card" id="predict-panel">
+          {/* v56.3 — right column wrapper.  Holds the predict card on top
+              and the user's open-positions panel directly below.  Both are
+              part of the same hero grid column so they stack vertically
+              and never overlap with the hero copy card or the chart. */}
+          <div className="classic-right-column">
+            {/* Predict card — same classes, same layout.  Real backend data. */}
+            <aside className="classic-predict-card" id="predict-panel">
             <div className="predict-head">
               <div>
                 <p className="classic-eyebrow">Predict</p>
@@ -827,14 +864,19 @@ function ClassicHome() {
               {signButtonLabel}
             </button>
           </aside>
-        </section>
 
-        {/* v42: connected user's open positions with live P/L. */}
-        <MyPositions
-          walletAddress={wallet.publicKey?.toBase58() ?? null}
-          markets={allMarkets}
-          refetchKey={positionsRefetchKey}
-        />
+          {/* v56.3 — MyPositions stacks below predict in the same right
+              column.  Always visible.  Was previously rendered outside the
+              hero section, leading to layout collisions where it could be
+              squeezed to zero height or hidden under other absolute
+              elements.  Now it's a normal flex child of the right column. */}
+          <MyPositions
+            walletAddress={wallet.publicKey?.toBase58() ?? null}
+            markets={allMarkets}
+            refetchKey={positionsRefetchKey}
+          />
+          </div>
+        </section>
 
         {/* v24: thin DexScreener strip docked to the bottom of the viewport.
             v21 removed the full chart section to enforce one-page; v24

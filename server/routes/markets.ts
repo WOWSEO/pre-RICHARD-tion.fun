@@ -431,19 +431,44 @@ marketsRouter.post("/:id/enter", async (req, res, next) => {
       err,
     );
     if (depositId != null) {
+      // v56.3 — read the deposit's current state before changing it.  If
+      // status is already 'confirmed', we got past the syncMarket call and
+      // the position WAS created — refunding here would be a double-spend
+      // (user gets stake back AND keeps a winning/losing position).  Only
+      // mark failed and refund when the deposit is still 'pending'.
+      let depositAlreadyConfirmed = false;
       try {
-        await sb
+        const { data: existing } = await sb
           .from("escrow_deposits")
-          .update({
-            status: "failed",
-            failure_reason: `unhandled_error_v54.6: ${errMsg.slice(0, 200)}`,
-          })
-          .eq("id", depositId);
-      } catch (markErr) {
-        console.error(`[markets/enter] failed to mark deposit ${depositId} failed:`, markErr);
+          .select("status, position_id, trade_id")
+          .eq("id", depositId)
+          .maybeSingle<{ status: string; position_id: string | null; trade_id: string | null }>();
+        if (existing && (existing.status === "confirmed" || existing.position_id || existing.trade_id)) {
+          depositAlreadyConfirmed = true;
+          console.warn(
+            `[markets/enter] outer-catch but deposit=${depositId} status=${existing.status} ` +
+              `position=${existing.position_id ?? "null"} trade=${existing.trade_id ?? "null"}; ` +
+              `bet went through, NOT queueing auto-refund (would double-spend)`,
+          );
+        }
+      } catch (readErr) {
+        console.error(`[markets/enter] failed to read deposit ${depositId} state:`, readErr);
       }
-    }
-    if (postVerifyState != null) {
+      if (!depositAlreadyConfirmed) {
+        try {
+          await sb
+            .from("escrow_deposits")
+            .update({
+              status: "failed",
+              failure_reason: `unhandled_error_v54.6: ${errMsg.slice(0, 200)}`,
+            })
+            .eq("id", depositId);
+        } catch (markErr) {
+          console.error(`[markets/enter] failed to mark deposit ${depositId} failed:`, markErr);
+        }
+      }
+      // Skip the refund queue when the bet went through.
+      if (postVerifyState != null && !depositAlreadyConfirmed) {
       // SOL is on-chain in escrow.  Queue a refund automatically so the
       // user gets it back within one payouts/run cron tick (~1 minute)
       // instead of waiting for manual SQL.
@@ -479,6 +504,7 @@ marketsRouter.post("/:id/enter", async (req, res, next) => {
         }
       } catch (refundErr) {
         console.error(`[markets/enter] auto-refund queue failed:`, refundErr);
+      }
       }
     }
     next(err);

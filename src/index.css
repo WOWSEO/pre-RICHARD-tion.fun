@@ -147,6 +147,18 @@ button, input { font: inherit; }
 .classic-secondary { background: rgba(0,0,0,.08); color: #001c10; border: 1px solid rgba(0,0,0,.15); }
 
 .classic-predict-card { position: relative; z-index: 12; border-radius: 30px; padding: 28px; width: min(100%, 520px); justify-self: end; }
+/* v56.3 — right column wrapper.  Stacks predict card + MyPositions
+   vertically in the same hero grid column, justify-self: end to align
+   with the right edge.  Width matches the predict card so both look
+   visually attached. */
+.classic-right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  justify-self: end;
+  width: min(100%, 520px);
+}
+.classic-right-column .classic-predict-card { width: 100%; }
 .predict-head { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
 .predict-head h2 { margin: 0; font-size: 31px; letter-spacing: -0.055em; }
 .predict-head-right { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
@@ -374,12 +386,16 @@ button, input { font: inherit; }
 /* v42 — MyPositions panel: floating card in the empty zone below the
    predict card.  Absolute-positioned so it doesn't affect the hero
    layout.  Collapsible header + list rows showing live P/L. */
+/* v56.3 — MyPositions panel now lives inside .classic-right-column as a
+   flex child below the predict card.  No more absolute positioning —
+   that approach kept colliding with whatever else lived in the bottom
+   half of the viewport.  Now it's part of the predict overlay itself. */
 .my-positions {
-  position: absolute;
-  z-index: 11;
-  right: 28px;
-  bottom: clamp(440px, 50vh, 540px); /* sits above the chart */
-  width: min(100%, 520px);
+  position: relative;
+  width: 100%;
+  max-height: clamp(180px, 26vh, 320px);
+  display: flex;
+  flex-direction: column;
   background: rgba(232, 230, 218, .92);
   border: 1px solid rgba(255,255,255,.55);
   box-shadow: 0 18px 60px rgba(0,0,0,.22);
@@ -388,6 +404,7 @@ button, input { font: inherit; }
   overflow: hidden;
   pointer-events: auto;
 }
+.my-positions-body { overflow-y: auto; }
 .my-positions-toggle {
   width: 100%;
   display: flex;
@@ -590,12 +607,13 @@ button, input { font: inherit; }
 @media (max-width: 1050px) {
   .my-positions {
     position: relative;
-    right: auto; bottom: auto;
+    left: auto; right: auto; bottom: auto;
     width: 100%;
+    max-height: none;
     margin: 18px 0 0;
   }
   .site-footer-inner { flex-direction: column; gap: 8px; }
-  .chart-strip { bottom: auto !important; }
+  .chart-strip { bottom: auto !important; left: 0 !important; right: 0 !important; }
 }
 
 /* ============================================================================ *
