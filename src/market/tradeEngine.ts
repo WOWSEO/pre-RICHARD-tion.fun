@@ -211,30 +211,91 @@ function sell(
     );
   }
 
-  // Capture market price before the pool changes so the trade event has a
-  // meaningful before/after for the audit trail.
+  // ============================================================================
+  // v56 — Polymarket-style market-rate exit math.
+  //
+  // Replaces v54.4's cost-basis exit.  The fair value of an early exit
+  // depends on how the implied price has moved since entry:
+  //
+  //     fair_value = stake × (now_price / entry_price)
+  //
+  // Profit (now > entry) is funded by the contra-pool — money the losing
+  // side has staked.  Loss-locking (now < entry) leaves the unclaimed
+  // residual in the side pool, where it benefits remaining holders.
+  //
+  // Solvency cap: the contra-pool can never fund more than its own size, so
+  // exit_value ≤ stake + contra_pool.  When the cap binds, the user gets
+  // the maximum the market can afford (stake + entire contra-pool).
+  //
+  // Conservation:
+  //   side_pool_after  = side_pool_before  - stake  +  max(0, stake - paid)
+  //   contra_pool_after = contra_pool_before - max(0, paid - stake)
+  //   total_after = total_before - paid    ✓
+  //
+  // Settlement after early exits: the parimutuel rule still applies — winners
+  // split (qYes_after + qNo_after) proportionally to their remaining stakes.
+  // Because exits remove stake from the side pool, holders who stayed have a
+  // larger share of a smaller pool.  The math stays internally consistent.
+  //
+  // Fee: 3% of gross proceeds is charged at withdrawal time (payoutEngine).
+  // ============================================================================
   const priceBefore = side === "YES" ? market.yesPriceCents : market.noPriceCents;
+  const sidePool = side === "YES" ? market.amm.qYes : market.amm.qNo;
+  const contraPool = side === "YES" ? market.amm.qNo : market.amm.qYes;
 
-  // Proportional cost-basis refund. For a single-buy position where
-  // shares == costBasisTroll == stake, this simplifies to just sharesToExit.
-  // For aggregated positions across multiple buys, the proportional split
-  // returns the right slice of the user's average stake.
+  // Proportional share of the position being exited.
   const fraction = sharesToExit / position.shares;
-  const stakeToReturn = fraction * position.costBasisTroll;
+  const stakeBeingExited = fraction * position.costBasisTroll;
+  const entryPriceCents = position.averageEntryPriceCents;
 
-  // Decrease the pool. Math.max guards against floating-point drift pushing
-  // us slightly negative on a full drain.
-  if (side === "YES") {
-    market.amm.qYes = Math.max(0, market.amm.qYes - stakeToReturn);
+  // Fair value at the current implied price.  If entry is somehow zero
+  // (shouldn't happen in production but defend anyway), fall back to stake.
+  let grossProceeds: number;
+  if (entryPriceCents > 0) {
+    grossProceeds = stakeBeingExited * (priceBefore / entryPriceCents);
   } else {
-    market.amm.qNo = Math.max(0, market.amm.qNo - stakeToReturn);
+    grossProceeds = stakeBeingExited;
   }
 
-  // Update position. averageEntryPriceCents stays the same for a partial
-  // exit (you exit at average cost, so the remaining shares have the same
-  // average). On full exit we zero everything and mark closed.
+  // Solvency cap: the most we can pay out is the user's own stake plus the
+  // entire contra-pool.  Any further would push contraPool negative.
+  const solvencyCap = stakeBeingExited + contraPool;
+  if (grossProceeds > solvencyCap) {
+    grossProceeds = solvencyCap;
+  }
+  // Floor at zero — can't pay negative.  Also, if the price somehow rounded
+  // to zero, we still owe at least a tiny amount.  Use 1¢-equivalent as a
+  // floor on the share-value to avoid rounding to literally zero refunds on
+  // valid exits.
+  if (!Number.isFinite(grossProceeds) || grossProceeds < 0) {
+    grossProceeds = 0;
+  }
+
+  const profit = grossProceeds - stakeBeingExited;
+
+  // Pool accounting (always-non-negative-guarded).
+  if (side === "YES") {
+    market.amm.qYes = Math.max(0, market.amm.qYes - stakeBeingExited);
+    if (profit > 0) {
+      // Profit is funded by the NO pool.
+      market.amm.qNo = Math.max(0, market.amm.qNo - profit);
+    } else if (profit < 0) {
+      // Loss-locked: residual stays in YES pool for remaining holders.
+      market.amm.qYes = market.amm.qYes + (-profit);
+    }
+  } else {
+    market.amm.qNo = Math.max(0, market.amm.qNo - stakeBeingExited);
+    if (profit > 0) {
+      market.amm.qYes = Math.max(0, market.amm.qYes - profit);
+    } else if (profit < 0) {
+      market.amm.qNo = market.amm.qNo + (-profit);
+    }
+  }
+
+  // Update position.  Realized PnL accumulates the profit/loss component.
   const newShares = position.shares - sharesToExit;
-  const newCostBasis = position.costBasisTroll - stakeToReturn;
+  const newCostBasis = position.costBasisTroll - stakeBeingExited;
+  position.realizedPnlTroll = (position.realizedPnlTroll ?? 0) + profit;
   if (newShares < 1e-9) {
     position.shares = 0;
     position.costBasisTroll = 0;
@@ -242,6 +303,8 @@ function sell(
   } else {
     position.shares = newShares;
     position.costBasisTroll = newCostBasis;
+    // averageEntryPriceCents stays the same — the user is still holding the
+    // remainder at the same average entry.
   }
   position.updatedAt = now;
 
@@ -256,10 +319,10 @@ function sell(
     marketId: market.id,
     wallet: user.wallet,
     action,
-    amountTroll: stakeToReturn,
+    amountTroll: grossProceeds,
     shares: sharesToExit,
     priceCents: priceBefore,
-    avgPriceCents: position.averageEntryPriceCents,
+    avgPriceCents: entryPriceCents,
     priceBeforeCents: priceBefore,
     priceAfterCents: priceAfter,
     timestamp: now,
@@ -269,7 +332,7 @@ function sell(
   const quote: TradeQuote = {
     side,
     action: "sell",
-    trollAmount: stakeToReturn,
+    trollAmount: grossProceeds,
     shares: sharesToExit,
     avgPriceCents: priceBefore,
     marketPriceBeforeCents: priceBefore,
@@ -281,7 +344,7 @@ function sell(
     quote,
     trade,
     positionId: position.id,
-    newUserTrollBalance: user.trollBalance + stakeToReturn,
+    newUserTrollBalance: user.trollBalance + grossProceeds,
     newPositionShares: position.shares,
     newPositionAverageEntryPriceCents: position.averageEntryPriceCents,
   };

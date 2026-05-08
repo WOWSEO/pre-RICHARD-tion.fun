@@ -150,56 +150,127 @@ describe("parimutuel buy", () => {
   });
 });
 
-describe("parimutuel exit-at-cost-basis (v54.4)", () => {
-  it("full exit refunds stake, removes position from pool, marks position closed", () => {
+describe("parimutuel exit-at-market-rate (v56)", () => {
+  it("exit at the same implied price refunds approximately the stake (no profit, no loss)", () => {
     const { store, market } = makeMarket();
     const alice = store.upsertUser("alice", 1000);
+    const bob = store.upsertUser("bob", 1000);
+    // Both alice and bob put 100 each → 50/50 implied.  alice's avg entry
+    // price is 50¢ (the midpoint of 0/0 → 100/0 buy is treated as 50¢ in
+    // the parimutuel pricing engine).
     buyYes(alice, market, 100);
-    expect(market.amm.qYes).toBe(100);
+    buyNo(bob, market, 100);
 
-    // Alice has 100 shares (= 100 stake) on YES.  Full exit.
+    const aliceYes = market.positions.find((p) => p.wallet === "alice")!;
+    const entryPrice = aliceYes.averageEntryPriceCents;
+    const nowPrice = market.yesPriceCents;
+
     const r = sellYes(alice, market, 100);
 
-    expect(r.quote.trollAmount).toBeCloseTo(100, 6);
-    expect(market.amm.qYes).toBeCloseTo(0, 6);
+    // Fair value = stake × (now/entry).  At a 50/50 market, now ≈ entry.
+    const expected = 100 * (nowPrice / entryPrice);
+    expect(r.quote.trollAmount).toBeCloseTo(expected, 4);
+
     const pos = market.positions.find((p) => p.wallet === "alice" && p.side === "YES")!;
     expect(pos.shares).toBe(0);
-    expect(pos.costBasisTroll).toBe(0);
     expect(pos.status).toBe("closed");
   });
 
-  it("partial exit refunds proportional stake, leaves the rest open", () => {
+  it("exit when winning pays out MORE than stake (profit funded by contra-pool)", () => {
     const { store, market } = makeMarket();
     const alice = store.upsertUser("alice", 1000);
-    buyYes(alice, market, 100);
+    const bob = store.upsertUser("bob", 1000);
+    const carol = store.upsertUser("carol", 1000);
 
-    // Exit half.
-    const r = sellYes(alice, market, 50);
+    // Setup: alice enters when market is 50/50.  Then more money piles into
+    // YES, pushing implied YES price up.  alice exits with profit.
+    buyYes(alice, market, 100); // qYes=100, qNo=0; alice avg entry ≈ 50¢
+    buyNo(bob, market, 100);    // qYes=100, qNo=100; 50/50
+    const aliceEntryPrice = market.positions.find((p) => p.wallet === "alice")!.averageEntryPriceCents;
+    buyYes(carol, market, 200); // qYes=300, qNo=100; implied YES ≈ 75¢
 
-    expect(r.quote.trollAmount).toBeCloseTo(50, 6);
-    expect(market.amm.qYes).toBeCloseTo(50, 6);
-    const pos = market.positions.find((p) => p.wallet === "alice" && p.side === "YES")!;
-    expect(pos.shares).toBeCloseTo(50, 6);
-    expect(pos.costBasisTroll).toBeCloseTo(50, 6);
-    expect(pos.status).toBe("open");
+    const yesNow = market.yesPriceCents;
+    const qNoBefore = market.amm.qNo;
+    const r = sellYes(alice, market, 100);
+
+    // Fair value = 100 × (yesNow / aliceEntryPrice).  Should be > 100.
+    const expectedFairValue = 100 * (yesNow / aliceEntryPrice);
+    expect(r.quote.trollAmount).toBeGreaterThan(100);
+    expect(r.quote.trollAmount).toBeCloseTo(expectedFairValue, 4);
+
+    // Profit came out of the NO pool.
+    const profit = r.quote.trollAmount - 100;
+    expect(market.amm.qNo).toBeCloseTo(qNoBefore - profit, 4);
   });
 
-  it("exit decreases pool, shifting odds for remaining participants", () => {
+  it("exit when losing pays out LESS than stake (residual stays in side-pool)", () => {
+    const { store, market } = makeMarket();
+    const alice = store.upsertUser("alice", 1000);
+    const bob = store.upsertUser("bob", 1000);
+    const carol = store.upsertUser("carol", 1000);
+
+    // alice bets YES at midpoint, then NO floods in, pushing alice underwater.
+    buyYes(alice, market, 100);
+    buyNo(bob, market, 100);
+    const aliceEntryPrice = market.positions.find((p) => p.wallet === "alice")!.averageEntryPriceCents;
+    buyNo(carol, market, 300); // qYes=100, qNo=400; implied YES drops
+
+    const yesNow = market.yesPriceCents;
+    const qYesBefore = market.amm.qYes;
+    const qNoBefore = market.amm.qNo;
+    const r = sellYes(alice, market, 100);
+
+    const expectedFairValue = 100 * (yesNow / aliceEntryPrice);
+    expect(r.quote.trollAmount).toBeLessThan(100);
+    expect(r.quote.trollAmount).toBeCloseTo(expectedFairValue, 4);
+
+    // alice's stake of 100 was in qYes.  She got back r.quote.trollAmount.
+    // The residual (100 - that amount) stays in qYes for remaining holders.
+    const residual = 100 - r.quote.trollAmount;
+    expect(market.amm.qYes).toBeCloseTo(qYesBefore - 100 + residual, 4);
+    // qNo unchanged on a losing exit (no profit to fund).
+    expect(market.amm.qNo).toBeCloseTo(qNoBefore, 4);
+  });
+
+  it("solvency cap: exit can't pay more than stake + contra-pool", () => {
+    const { store, market } = makeMarket();
+    const alice = store.upsertUser("alice", 1000);
+    const bob = store.upsertUser("bob", 1000);
+
+    // Tiny contra-pool relative to the YES position.  alice bets YES,
+    // bob bets a sliver on NO.  YES becomes very favored.  alice tries to
+    // exit and the cap binds.
+    buyYes(alice, market, 100);
+    buyNo(bob, market, 1); // qYes=100, qNo=1; YES heavily favored
+
+    const r = sellYes(alice, market, 100);
+    // Cap = stake + contra-pool = 100 + 1 = 101.  Without the cap the math
+    // could have demanded more (now-price near 99¢, entry ≈ 50¢, fair value
+    // ≈ 198, but the contra-pool only has 1).
+    expect(r.quote.trollAmount).toBeLessThanOrEqual(101 + 1e-6);
+    expect(market.amm.qNo).toBeGreaterThanOrEqual(0);
+  });
+
+  it("partial exit pays a fraction of fair value, leaves remainder open with same avg-entry", () => {
     const { store, market } = makeMarket();
     const alice = store.upsertUser("alice", 1000);
     const bob = store.upsertUser("bob", 1000);
     buyYes(alice, market, 100);
     buyNo(bob, market, 100);
 
-    // 50/50 split before exit.
-    expect(market.yesPriceCents).toBe(50);
-    expect(market.noPriceCents).toBe(50);
+    const entryPrice = market.positions.find((p) => p.wallet === "alice")!.averageEntryPriceCents;
+    const nowPrice = market.yesPriceCents;
 
-    // Bob exits.  YES is now the entire pool.
-    sellNo(bob, market, 100);
-    expect(market.amm.qNo).toBeCloseTo(0, 6);
-    expect(market.yesPriceCents).toBe(99); // displayed-clamped from 100
-    expect(market.noPriceCents).toBe(1);
+    // Exit half.
+    const r = sellYes(alice, market, 50);
+    const expectedFairValue = 50 * (nowPrice / entryPrice);
+    expect(r.quote.trollAmount).toBeCloseTo(expectedFairValue, 4);
+
+    const pos = market.positions.find((p) => p.wallet === "alice" && p.side === "YES")!;
+    expect(pos.shares).toBeCloseTo(50, 6);
+    expect(pos.costBasisTroll).toBeCloseTo(50, 6);
+    expect(pos.averageEntryPriceCents).toBeCloseTo(entryPrice, 4);
+    expect(pos.status).toBe("open");
   });
 
   it("exit on closed market throws", () => {
@@ -227,10 +298,29 @@ describe("parimutuel exit-at-cost-basis (v54.4)", () => {
   it("does NOT bump market.volume on exit (volume tracks new bets, not gross turnover)", () => {
     const { store, market } = makeMarket();
     const alice = store.upsertUser("alice", 1000);
+    const bob = store.upsertUser("bob", 1000);
     buyYes(alice, market, 100);
+    buyNo(bob, market, 100);
     const volBefore = market.volume;
     sellYes(alice, market, 50);
     expect(market.volume).toBe(volBefore);
+  });
+
+  it("conservation: total pool change equals exactly what the exiter received", () => {
+    const { store, market } = makeMarket();
+    const alice = store.upsertUser("alice", 1000);
+    const bob = store.upsertUser("bob", 1000);
+    const carol = store.upsertUser("carol", 1000);
+    buyYes(alice, market, 100);
+    buyNo(bob, market, 100);
+    buyYes(carol, market, 200); // skew YES heavy so alice has profit
+
+    const totalBefore = market.amm.qYes + market.amm.qNo;
+    const r = sellYes(alice, market, 100);
+    const totalAfter = market.amm.qYes + market.amm.qNo;
+
+    // Money out of the system = money paid to alice.
+    expect(totalBefore - totalAfter).toBeCloseTo(r.quote.trollAmount, 4);
   });
 });
 

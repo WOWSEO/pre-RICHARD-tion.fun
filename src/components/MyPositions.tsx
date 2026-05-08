@@ -32,7 +32,19 @@ interface Enriched {
   market: MarketSummary | null;
   shares: number;
   costBasis: number;
-  currentValue: number;
+  /** v56 — current implied price for this side, in cents [1..99]. */
+  nowPriceCents: number;
+  /** v56 — entry price stored on the position row, in cents. */
+  entryPriceCents: number;
+  /** v56 — Polymarket-style market-rate fair value at the current price. */
+  fairValue: number;
+  /** v56 — solvency cap (= stake + contra-pool).  Exit can't exceed this. */
+  solvencyCap: number;
+  /** v56 — what they'd actually get on Exit (gross, before 3% fee). */
+  exitGross: number;
+  /** v56 — what they'd actually receive (net of 3% fee). */
+  exitNet: number;
+  /** v56 — unrealized P/L based on market-rate fair value. */
   pnl: number;
   pnlPct: number;
 }
@@ -77,14 +89,16 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
   // v55 — caller now signs the exit intent before posting.  This proves
   // wallet ownership server-side and prevents griefing where an attacker
   // who learned a position UUID could force-exit a stranger's bet.
+  // v56 — exit value is now market-rate (Polymarket-style), not cost basis.
+  // The dialog shows what the user will actually receive at current price.
   const onExit = useCallback(
-    async (positionId: string, costBasis: number) => {
+    async (positionId: string, exitGross: number) => {
       if (!walletAddress) return;
-      const grossRefund = costBasis;
-      const netRefund = costBasis * 0.97;
+      const grossRefund = exitGross;
+      const netRefund = exitGross * 0.97;
       const ok = window.confirm(
         `Exit this position?\n\n` +
-          `Stake (gross): ${grossRefund.toFixed(4)} SOL\n` +
+          `Market-rate proceeds (gross): ${grossRefund.toFixed(4)} SOL\n` +
           `You receive (net of 3% fee): ${netRefund.toFixed(4)} SOL\n\n` +
           `Your wallet will prompt you to sign a message to authorize the exit.\n` +
           `No SOL leaves your wallet for the signing step itself.\n\n` +
@@ -93,7 +107,6 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
       if (!ok) return;
       setExitState((s) => ({ ...s, [positionId]: { busy: true, error: null } }));
       try {
-        // Sign the canonical exit intent.  Wallet popup appears here.
         const timestamp = Date.now();
         const signed = await signExitIntent(wallet, {
           wallet: walletAddress,
@@ -110,8 +123,6 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
         await refresh();
       } catch (e) {
         const msg = (e as Error).message ?? "Exit failed";
-        // Friendlier copy for the common case where the user clicks "Cancel"
-        // in the wallet popup.
         const friendly = /reject|denied|cancel/i.test(msg)
           ? "You cancelled the signature."
           : msg;
@@ -129,14 +140,46 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
         const market = byId.get(row.market_id) ?? null;
         const shares = Number(row.shares);
         const costBasis = Number(row.cost_basis_troll);
-        const priceCents =
+        const entryPriceCents = Number(row.average_entry_price_cents) || 50;
+        const nowPriceCents =
           row.side === "YES"
             ? market?.yesPriceCents ?? 50
             : market?.noPriceCents ?? 50;
-        const currentValue = shares * (priceCents / 100);
-        const pnl = currentValue - costBasis;
+
+        // v56 — Polymarket-style fair value.  Same formula as server-side
+        // sell() in tradeEngine.ts.  Solvency cap = stake + contra-pool
+        // (taken from market.yesLiquidity / noLiquidity, which mirror
+        // qYes / qNo).  Without the cap the displayed P/L could mislead in
+        // markets where the contra-pool can't actually fund the profit.
+        const fairValueRaw =
+          entryPriceCents > 0
+            ? costBasis * (nowPriceCents / entryPriceCents)
+            : costBasis;
+        const contraPool =
+          row.side === "YES"
+            ? market?.noLiquidity ?? 0
+            : market?.yesLiquidity ?? 0;
+        const solvencyCap = costBasis + contraPool;
+        const fairValue = Math.max(0, Math.min(fairValueRaw, solvencyCap));
+        const exitGross = fairValue;
+        const exitNet = exitGross * 0.97;
+        const pnl = exitGross - costBasis;
         const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
-        return { row, market, shares, costBasis, currentValue, pnl, pnlPct };
+
+        return {
+          row,
+          market,
+          shares,
+          costBasis,
+          nowPriceCents,
+          entryPriceCents,
+          fairValue,
+          solvencyCap,
+          exitGross,
+          exitNet,
+          pnl,
+          pnlPct,
+        };
       })
       .sort((a, b) => (a.market?.closeAt ?? "").localeCompare(b.market?.closeAt ?? ""));
   }, [rows, markets]);
@@ -144,11 +187,11 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
   if (!walletAddress) return null;
 
   const totalCostBasis = enriched.reduce((s, e) => s + e.costBasis, 0);
-  const totalValue = enriched.reduce((s, e) => s + e.currentValue, 0);
-  const totalPnl = totalValue - totalCostBasis;
+  const totalFairValue = enriched.reduce((s, e) => s + e.fairValue, 0);
+  const totalPnl = totalFairValue - totalCostBasis;
 
   return (
-    <section className="my-positions">
+    <section className="my-positions" id="my-positions">
       <header className="my-positions-head">
         <button
           type="button"
@@ -156,15 +199,15 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
           onClick={() => setCollapsed((c) => !c)}
           aria-expanded={!collapsed}
         >
-          <span>Your positions</span>
+          <span>Your bets</span>
           <small>
-            {enriched.length} open
+            {enriched.length === 0 ? "0 open" : `${enriched.length} open`}
             {enriched.length > 0 && (
               <>
                 {" · "}
                 <b className={totalPnl >= 0 ? "pnl-up" : "pnl-down"}>
                   {totalPnl >= 0 ? "+" : ""}
-                  {totalPnl.toFixed(3)} SOL
+                  {totalPnl.toFixed(4)} SOL
                 </b>
               </>
             )}
@@ -175,7 +218,7 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
 
       {!collapsed && (
         <div className="my-positions-body">
-          {loading && rows.length === 0 && <p className="my-positions-empty">Loading…</p>}
+          {loading && rows.length === 0 && <p className="my-positions-empty">Loading your bets…</p>}
           {error && (
             <p className="my-positions-empty my-positions-error">
               Couldn't load positions: {error}
@@ -183,7 +226,7 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
           )}
           {!loading && !error && enriched.length === 0 && (
             <p className="my-positions-empty">
-              No open positions. Pick a market above to place your first bet.
+              No bets yet. Pick YES or NO above and place your first one — it'll show up here with live P/L and a market-price exit option.
             </p>
           )}
           {enriched.length > 0 && (
@@ -212,27 +255,30 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
                     </div>
                     <div className="my-position-numbers">
                       <span title="Cost basis">
-                        In: <b>{e.costBasis.toFixed(2)}</b>
+                        In: <b>{e.costBasis.toFixed(4)}</b>
                       </span>
-                      <span title="Current value at live AMM price">
-                        Now: <b>{e.currentValue.toFixed(2)}</b>
+                      <span title="Entry price → current price (implied probability)">
+                        @ {e.entryPriceCents.toFixed(0)}¢ → {e.nowPriceCents.toFixed(0)}¢
+                      </span>
+                      <span title="Market-rate fair value: stake × (now/entry)">
+                        Now: <b>{e.fairValue.toFixed(4)}</b>
                       </span>
                       <span
                         className={e.pnl >= 0 ? "pnl-up" : "pnl-down"}
-                        title="Unrealized P/L"
+                        title="Unrealized P/L at current market price"
                       >
                         {e.pnl >= 0 ? "+" : ""}
-                        {e.pnl.toFixed(2)} ({e.pnlPct >= 0 ? "+" : ""}
+                        {e.pnl.toFixed(4)} ({e.pnlPct >= 0 ? "+" : ""}
                         {e.pnlPct.toFixed(1)}%)
                       </span>
                       <button
                         type="button"
                         className="my-position-exit"
                         disabled={!!ex.busy}
-                        onClick={() => onExit(e.row.id, e.costBasis)}
-                        title="Exit this position. 3% fee. Refunds the rest of your stake."
+                        onClick={() => onExit(e.row.id, e.exitGross)}
+                        title={`Exit at market price. You receive ${e.exitNet.toFixed(4)} SOL (net of 3% fee).`}
                       >
-                        {ex.busy ? "Exiting…" : "Exit"}
+                        {ex.busy ? "Exiting…" : `Exit ${e.exitNet.toFixed(3)}`}
                       </button>
                     </div>
                     {ex.error && (
