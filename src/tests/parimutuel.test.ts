@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { TROLL } from "../config/troll";
 import { createMarket } from "../market/scheduler";
-import { buyYes, buyNo, sellYes } from "../market/tradeEngine";
+import { buyYes, buyNo, sellYes, sellNo } from "../market/tradeEngine";
 import {
   resolve,
   applyPayouts,
@@ -150,12 +150,87 @@ describe("parimutuel buy", () => {
   });
 });
 
-describe("parimutuel sell (blocked)", () => {
-  it("sellYes throws — mid-market exits not supported", () => {
+describe("parimutuel exit-at-cost-basis (v54.4)", () => {
+  it("full exit refunds stake, removes position from pool, marks position closed", () => {
     const { store, market } = makeMarket();
     const alice = store.upsertUser("alice", 1000);
     buyYes(alice, market, 100);
-    expect(() => sellYes(alice, market, 50)).toThrow(/parimutuel/);
+    expect(market.amm.qYes).toBe(100);
+
+    // Alice has 100 shares (= 100 stake) on YES.  Full exit.
+    const r = sellYes(alice, market, 100);
+
+    expect(r.quote.trollAmount).toBeCloseTo(100, 6);
+    expect(market.amm.qYes).toBeCloseTo(0, 6);
+    const pos = market.positions.find((p) => p.wallet === "alice" && p.side === "YES")!;
+    expect(pos.shares).toBe(0);
+    expect(pos.costBasisTroll).toBe(0);
+    expect(pos.status).toBe("closed");
+  });
+
+  it("partial exit refunds proportional stake, leaves the rest open", () => {
+    const { store, market } = makeMarket();
+    const alice = store.upsertUser("alice", 1000);
+    buyYes(alice, market, 100);
+
+    // Exit half.
+    const r = sellYes(alice, market, 50);
+
+    expect(r.quote.trollAmount).toBeCloseTo(50, 6);
+    expect(market.amm.qYes).toBeCloseTo(50, 6);
+    const pos = market.positions.find((p) => p.wallet === "alice" && p.side === "YES")!;
+    expect(pos.shares).toBeCloseTo(50, 6);
+    expect(pos.costBasisTroll).toBeCloseTo(50, 6);
+    expect(pos.status).toBe("open");
+  });
+
+  it("exit decreases pool, shifting odds for remaining participants", () => {
+    const { store, market } = makeMarket();
+    const alice = store.upsertUser("alice", 1000);
+    const bob = store.upsertUser("bob", 1000);
+    buyYes(alice, market, 100);
+    buyNo(bob, market, 100);
+
+    // 50/50 split before exit.
+    expect(market.yesPriceCents).toBe(50);
+    expect(market.noPriceCents).toBe(50);
+
+    // Bob exits.  YES is now the entire pool.
+    sellNo(bob, market, 100);
+    expect(market.amm.qNo).toBeCloseTo(0, 6);
+    expect(market.yesPriceCents).toBe(99); // displayed-clamped from 100
+    expect(market.noPriceCents).toBe(1);
+  });
+
+  it("exit on closed market throws", () => {
+    const { store, market } = makeMarket();
+    const alice = store.upsertUser("alice", 1000);
+    buyYes(alice, market, 100);
+    market.status = "locked";
+    expect(() => sellYes(alice, market, 100)).toThrow(/not open/);
+  });
+
+  it("exit more than held throws", () => {
+    const { store, market } = makeMarket();
+    const alice = store.upsertUser("alice", 1000);
+    buyYes(alice, market, 100);
+    expect(() => sellYes(alice, market, 200)).toThrow(/has only 100/);
+  });
+
+  it("exit on a side with no position throws", () => {
+    const { store, market } = makeMarket();
+    const alice = store.upsertUser("alice", 1000);
+    buyYes(alice, market, 100);
+    expect(() => sellNo(alice, market, 50)).toThrow(/no open NO position/);
+  });
+
+  it("does NOT bump market.volume on exit (volume tracks new bets, not gross turnover)", () => {
+    const { store, market } = makeMarket();
+    const alice = store.upsertUser("alice", 1000);
+    buyYes(alice, market, 100);
+    const volBefore = market.volume;
+    sellYes(alice, market, 50);
+    expect(market.volume).toBe(volBefore);
   });
 });
 
@@ -328,6 +403,35 @@ describe("parimutuel settlement — VOID", () => {
     expect(aliceSettle.payoutTroll).toBe(200); // full refund, no fee
     expect(aliceSettle.finalStatus).toBe("void_refunded");
     expect(alice.trollBalance).toBe(1000); // back to starting
+  });
+
+  it("v54.4 — drained-winner-pool from exits forces VOID, refunds losers", () => {
+    // alice bets YES, bob bets NO, alice exits — now only NO has stake.
+    // If YES wins, the math would either divide by zero or orphan bob's
+    // stake.  The drained-pool guard treats this as VOID.
+    const { store, market } = makeMarket(50_000_000);
+    const alice = store.upsertUser("alice", 1000);
+    const bob = store.upsertUser("bob", 1000);
+
+    buyYes(alice, market, 100);
+    buyNo(bob, market, 100);
+    sellYes(alice, market, 100); // alice exits, yesPool now 0
+
+    // Force the resolver to say YES wins (oracle-driven; bypass the resolver
+    // by hand-crafting an outcome).
+    const fakeYesOutcome = {
+      outcome: "YES" as const,
+      voidReason: null,
+      canonicalMc: 999_999_999,
+      perSourceMedian: {},
+      validSnapshotsBySource: {},
+    };
+    const settlements = applyPayouts(market, store.users, fakeYesOutcome);
+
+    // Bob (NO holder) gets refunded full stake — VOID treatment, no fee.
+    const bobSettle = settlements.find((s) => s.wallet === "bob")!;
+    expect(bobSettle.payoutTroll).toBe(100);
+    expect(bobSettle.finalStatus).toBe("void_refunded");
   });
 });
 

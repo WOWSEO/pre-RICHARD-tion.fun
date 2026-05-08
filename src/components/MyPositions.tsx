@@ -40,6 +40,9 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  // v54.4 — per-position exit state.  Tracks { busy, error } keyed by
+  // position id so we can show inline status without a global flag.
+  const [exitState, setExitState] = useState<Record<string, { busy?: boolean; error?: string | null }>>({});
 
   const refresh = useCallback(async () => {
     if (!walletAddress) {
@@ -64,6 +67,33 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
     const t = setInterval(refresh, 30_000);
     return () => clearInterval(t);
   }, [refresh, refetchKey]);
+
+  // v54.4 — handle the Exit click.  Confirms with the user (3% fee is
+  // applied at withdrawal, so it's irreversible), calls the existing
+  // /api/positions/:id/exit endpoint, then refreshes the list.
+  const onExit = useCallback(
+    async (positionId: string, costBasis: number) => {
+      if (!walletAddress) return;
+      const grossRefund = costBasis;
+      const netRefund = costBasis * 0.97;
+      const ok = window.confirm(
+        `Exit this position?\n\n` +
+          `Stake (gross): ${grossRefund.toFixed(4)} SOL\n` +
+          `You receive (net of 3% fee): ${netRefund.toFixed(4)} SOL\n\n` +
+          `Exits cannot be undone.`,
+      );
+      if (!ok) return;
+      setExitState((s) => ({ ...s, [positionId]: { busy: true, error: null } }));
+      try {
+        await api.exit(positionId, { wallet: walletAddress });
+        setExitState((s) => ({ ...s, [positionId]: { busy: false, error: null } }));
+        await refresh();
+      } catch (e) {
+        setExitState((s) => ({ ...s, [positionId]: { busy: false, error: (e as Error).message } }));
+      }
+    },
+    [walletAddress, refresh],
+  );
 
   const enriched: Enriched[] = useMemo(() => {
     const byId = new Map(markets.map((m) => [m.id, m]));
@@ -132,44 +162,59 @@ export function MyPositions({ walletAddress, markets, refetchKey }: MyPositionsP
           )}
           {enriched.length > 0 && (
             <ul className="my-positions-list">
-              {enriched.map((e) => (
-                <li key={e.row.id} className="my-position-row">
-                  <div className="my-position-meta">
-                    <span className={`my-position-side side-${e.row.side.toLowerCase()}`}>
-                      {e.row.side}
-                    </span>
-                    <span className="my-position-market">
-                      {e.market?.symbol ? `${e.market.symbol} · ` : ""}
-                      {e.market?.scheduleType === "15m"
-                        ? "15-minute"
-                        : e.market?.scheduleType === "hourly"
-                          ? "Hourly"
-                          : e.market?.scheduleType === "daily"
-                            ? "Daily"
-                            : "Market"}{" "}
-                      · target ${(e.market?.targetMc ?? 0).toLocaleString(undefined, {
-                        maximumFractionDigits: 2,
-                      })}
-                    </span>
-                  </div>
-                  <div className="my-position-numbers">
-                    <span title="Cost basis">
-                      In: <b>{e.costBasis.toFixed(2)}</b>
-                    </span>
-                    <span title="Current value at live AMM price">
-                      Now: <b>{e.currentValue.toFixed(2)}</b>
-                    </span>
-                    <span
-                      className={e.pnl >= 0 ? "pnl-up" : "pnl-down"}
-                      title="Unrealized P/L"
-                    >
-                      {e.pnl >= 0 ? "+" : ""}
-                      {e.pnl.toFixed(2)} ({e.pnlPct >= 0 ? "+" : ""}
-                      {e.pnlPct.toFixed(1)}%)
-                    </span>
-                  </div>
-                </li>
-              ))}
+              {enriched.map((e) => {
+                const ex = exitState[e.row.id] ?? {};
+                return (
+                  <li key={e.row.id} className="my-position-row">
+                    <div className="my-position-meta">
+                      <span className={`my-position-side side-${e.row.side.toLowerCase()}`}>
+                        {e.row.side}
+                      </span>
+                      <span className="my-position-market">
+                        {e.market?.symbol ? `${e.market.symbol} · ` : ""}
+                        {e.market?.scheduleType === "15m"
+                          ? "15-minute"
+                          : e.market?.scheduleType === "hourly"
+                            ? "Hourly"
+                            : e.market?.scheduleType === "daily"
+                              ? "Daily"
+                              : "Market"}{" "}
+                        · target ${(e.market?.targetMc ?? 0).toLocaleString(undefined, {
+                          maximumFractionDigits: 2,
+                        })}
+                      </span>
+                    </div>
+                    <div className="my-position-numbers">
+                      <span title="Cost basis">
+                        In: <b>{e.costBasis.toFixed(2)}</b>
+                      </span>
+                      <span title="Current value at live AMM price">
+                        Now: <b>{e.currentValue.toFixed(2)}</b>
+                      </span>
+                      <span
+                        className={e.pnl >= 0 ? "pnl-up" : "pnl-down"}
+                        title="Unrealized P/L"
+                      >
+                        {e.pnl >= 0 ? "+" : ""}
+                        {e.pnl.toFixed(2)} ({e.pnlPct >= 0 ? "+" : ""}
+                        {e.pnlPct.toFixed(1)}%)
+                      </span>
+                      <button
+                        type="button"
+                        className="my-position-exit"
+                        disabled={!!ex.busy}
+                        onClick={() => onExit(e.row.id, e.costBasis)}
+                        title="Exit this position. 3% fee. Refunds the rest of your stake."
+                      >
+                        {ex.busy ? "Exiting…" : "Exit"}
+                      </button>
+                    </div>
+                    {ex.error && (
+                      <p className="my-position-exit-error">Exit failed: {ex.error}</p>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

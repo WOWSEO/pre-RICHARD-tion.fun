@@ -1,58 +1,42 @@
-import { useTrollBalance } from "../hooks/useTrollBalance";
 import { useSolBalance, formatSolBalance } from "../hooks/useSolBalance";
-import { formatTrollBalance } from "../services/trollBalance";
 
 /**
- * Combined SOL + $TROLL balance pill.
+ * SOL balance pill for the connected-wallet header chip.
  *
- * Renders two stacked chips next to the wallet-address button when
- * connected:
- *   - SOL: native lamports / 1e9, brand-cyan tint
- *   - $TROLL: SPL balance, brand-green/cyan gradient (matches old pill)
+ * v54.4 (wording cleanup): the secondary $TROLL pill was removed.  The
+ * platform is SOL-only since v47, so showing a $TROLL balance next to the
+ * SOL balance was clutter that suggested users could bet TROLL.  The
+ * TrollBalancePill component still exists and is used on the /troll
+ * archive page.
  *
- * If a balance is still loading, that one chip shows "loading…".  If it
- * errored out (RPC flake, mint not configured), it shows "—" so the
- * layout stays stable.  Both chips are independent — one failing
- * doesn't hide the other.
+ * If SOL is still loading the chip shows "loading…".  If the RPC errored
+ * (e.g. VITE_HELIUS_RPC_URL not configured) it shows "—" so the layout
+ * stays stable.
  *
- * Hidden on small viewports (< sm) to keep the header tight on mobile;
- * the same balances are surfaced inside the predict panel anyway.
+ * Hidden on small viewports (< sm) to keep the header tight on mobile.
  */
 export function WalletBalancesPill() {
   const sol = useSolBalance();
-  const troll = useTrollBalance();
 
   return (
     <div className="hidden sm:flex items-center gap-1.5">
       <Chip
-        kind="sol"
         loading={sol.loading}
         error={sol.error}
         text={sol.balance != null ? `${formatSolBalance(sol.balance)} SOL` : "— SOL"}
-      />
-      <Chip
-        kind="troll"
-        loading={troll.loading}
-        error={troll.error}
-        text={troll.balance != null ? `${formatTrollBalance(troll.balance)} $TROLL` : "— $TROLL"}
-        empty={troll.balance === 0}
       />
     </div>
   );
 }
 
 function Chip({
-  kind,
   loading,
   error,
   text,
-  empty = false,
 }: {
-  kind: "sol" | "troll";
   loading: boolean;
   error: string | null;
   text: string;
-  empty?: boolean;
 }) {
   if (loading) {
     return (
@@ -75,35 +59,19 @@ function Chip({
       </span>
     );
   }
-  // Brand styling per kind.  SOL = cool cyan/violet gradient; TROLL =
-  // green/cyan gradient (preserved exactly from the old TrollBalancePill).
-  const style =
-    kind === "sol"
-      ? {
-          background:
-            "linear-gradient(135deg, rgba(61,255,252,0.18) 0%, rgba(116,140,255,0.12) 100%)",
-          color: "#F4ECDB",
-        }
-      : {
-          background:
-            "linear-gradient(135deg, rgba(116,255,61,0.18) 0%, rgba(61,255,252,0.12) 100%)",
-          color: "#F4ECDB",
-        };
-  const dotCls = kind === "sol" ? "text-cyber-cyan" : "text-yes";
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-mono ring-1 ring-cream-100/10"
-      style={style}
+      style={{
+        background:
+          "linear-gradient(135deg, rgba(61,255,252,0.18) 0%, rgba(116,140,255,0.12) 100%)",
+        color: "#F4ECDB",
+      }}
     >
-      <span aria-hidden className={dotCls}>
+      <span aria-hidden className="text-cyber-cyan">
         ◇
       </span>
       <span className="tabular-nums">{text}</span>
-      {empty && (
-        <span className="ml-0.5 rounded bg-cream-100/10 px-1 text-[9px] uppercase tracking-wider text-cream-100/60">
-          empty
-        </span>
-      )}
     </span>
   );
 }

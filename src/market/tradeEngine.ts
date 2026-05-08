@@ -154,25 +154,137 @@ function buy(
   };
 }
 
-// ----- Sell / Exit (BLOCKED in parimutuel) -----
+// ----- Sell / Exit (v54.4: parimutuel exit-at-cost-basis) -----
 
+/**
+ * Parimutuel exit. The user gets their proportional cost basis back and the
+ * pool decreases by exactly that amount. Conservation holds: every dollar
+ * pulled out of a position also leaves the pool, so other participants'
+ * payout multipliers shift but no one is ever underfunded.
+ *
+ * Math:
+ *   stakeToReturn   = (sharesToExit / position.shares) * position.costBasisTroll
+ *   pool[side]     -= stakeToReturn
+ *   position.shares       -= sharesToExit
+ *   position.costBasisTroll -= stakeToReturn
+ *
+ * The 3% platform fee is NOT charged here. It is applied later by
+ * payoutEngine when the withdrawal row is processed (the existing
+ * `feeApplies = reason === 'payout' || 'exit'` gate).
+ *
+ * Edge cases:
+ *   - Market not open       -> throw (locked positions cannot exit)
+ *   - sharesToExit > shares -> throw (cannot exit more than you hold)
+ *   - Full exit (residual < epsilon) -> position.status = 'closed'
+ *
+ * Side effects on settlement: if exits drain a winning pool to zero, the
+ * settlement engine treats the market as VOID so loser stakes don't get
+ * orphaned. See settlementEngine.applyPayouts.
+ */
 function sell(
-  _user: User,
-  _market: Market,
+  user: User,
+  market: Market,
   side: Side,
-  _shares: number,
-  _now: Date = new Date(),
+  sharesToExit: number,
+  now: Date = new Date(),
 ): ExecutionReceipt {
-  // v52 — parimutuel does not support mid-market exits.  The whole point
-  // of pool-based settlement is that the loser pool is determined at
-  // close.  Letting a user pull out mid-market would change the implied
-  // payouts of everyone else still in.  If we ever want cash-out, it has
-  // to be a separately-priced secondary mechanism (oracle-priced exit at
-  // current implied probability), not a pool withdrawal.
-  throw new Error(
-    `sell${side}: parimutuel markets do not support mid-market exits. ` +
-      `Wait for settlement.`,
+  if (market.status !== "open") {
+    throw new Error(
+      `sell${side}: market ${market.id} is ${market.status}, not open`,
+    );
+  }
+  if (!Number.isFinite(sharesToExit) || sharesToExit <= 0) {
+    throw new Error(`sell${side}: sharesToExit must be a positive number`);
+  }
+
+  const position = market.positions.find(
+    (p) => p.wallet === user.wallet && p.side === side && p.status === "open",
   );
+  if (!position) {
+    throw new Error(
+      `sell${side}: no open ${side} position for wallet ${user.wallet} on market ${market.id}`,
+    );
+  }
+  if (sharesToExit > position.shares + 1e-9) {
+    throw new Error(
+      `sell${side}: cannot exit ${sharesToExit} shares, position has only ${position.shares}`,
+    );
+  }
+
+  // Capture market price before the pool changes so the trade event has a
+  // meaningful before/after for the audit trail.
+  const priceBefore = side === "YES" ? market.yesPriceCents : market.noPriceCents;
+
+  // Proportional cost-basis refund. For a single-buy position where
+  // shares == costBasisTroll == stake, this simplifies to just sharesToExit.
+  // For aggregated positions across multiple buys, the proportional split
+  // returns the right slice of the user's average stake.
+  const fraction = sharesToExit / position.shares;
+  const stakeToReturn = fraction * position.costBasisTroll;
+
+  // Decrease the pool. Math.max guards against floating-point drift pushing
+  // us slightly negative on a full drain.
+  if (side === "YES") {
+    market.amm.qYes = Math.max(0, market.amm.qYes - stakeToReturn);
+  } else {
+    market.amm.qNo = Math.max(0, market.amm.qNo - stakeToReturn);
+  }
+
+  // Update position. averageEntryPriceCents stays the same for a partial
+  // exit (you exit at average cost, so the remaining shares have the same
+  // average). On full exit we zero everything and mark closed.
+  const newShares = position.shares - sharesToExit;
+  const newCostBasis = position.costBasisTroll - stakeToReturn;
+  if (newShares < 1e-9) {
+    position.shares = 0;
+    position.costBasisTroll = 0;
+    position.status = "closed";
+  } else {
+    position.shares = newShares;
+    position.costBasisTroll = newCostBasis;
+  }
+  position.updatedAt = now;
+
+  // Note: do NOT bump market.volume on exits. Volume is a measure of new
+  // stake entering the market, not gross turnover.
+  refreshMarketDisplay(market);
+
+  const priceAfter = side === "YES" ? market.yesPriceCents : market.noPriceCents;
+  const action: TradeAction = side === "YES" ? "sell_yes" : "sell_no";
+  const trade: TradeEvent = {
+    id: nextTradeId(),
+    marketId: market.id,
+    wallet: user.wallet,
+    action,
+    amountTroll: stakeToReturn,
+    shares: sharesToExit,
+    priceCents: priceBefore,
+    avgPriceCents: position.averageEntryPriceCents,
+    priceBeforeCents: priceBefore,
+    priceAfterCents: priceAfter,
+    timestamp: now,
+  };
+  market.trades.push(trade);
+
+  const quote: TradeQuote = {
+    side,
+    action: "sell",
+    trollAmount: stakeToReturn,
+    shares: sharesToExit,
+    avgPriceCents: priceBefore,
+    marketPriceBeforeCents: priceBefore,
+    marketPriceAfterCents: priceAfter,
+    priceImpactCents: priceAfter - priceBefore,
+  };
+
+  return {
+    quote,
+    trade,
+    positionId: position.id,
+    newUserTrollBalance: user.trollBalance + stakeToReturn,
+    newPositionShares: position.shares,
+    newPositionAverageEntryPriceCents: position.averageEntryPriceCents,
+  };
 }
 
 // ----- Public spec-shaped API -----

@@ -275,6 +275,32 @@ export function applyPayouts(
     .reduce((acc, p) => acc + p.costBasisTroll, 0);
   const totalPool = yesPool + noPool;
 
+  // v54.4 — drained-pool void guard.
+  //
+  // With exits enabled, it's now possible for the winning pool to be
+  // empty at settlement time (everyone on that side exited before close).
+  // The original parimutuel math (`stake / winnerPool * totalPool`) would
+  // either divide by zero or leave loser stakes orphaned in escrow with no
+  // winners to pay.  Treating this as VOID refunds everyone their stake
+  // and keeps escrow consistent.
+  //
+  // The complementary case (loser pool empty, winner pool non-empty) is
+  // also a VOID candidate — there's nothing to win except your own stake
+  // back, which is exactly the VOID outcome anyway.  We only have to flip
+  // outcome when the WINNING side is empty; the engine handles the other
+  // case correctly already (winners get full pool / fee = stake back).
+  if (
+    outcome.outcome !== "VOID" &&
+    ((outcome.outcome === "YES" && yesPool === 0) ||
+      (outcome.outcome === "NO" && noPool === 0))
+  ) {
+    outcome = {
+      ...outcome,
+      outcome: "VOID",
+      voidReason: "no_winners_after_exits",
+    };
+  }
+
   for (const p of open) {
     const user = userByWallet.get(p.wallet);
     if (!user) continue;

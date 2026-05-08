@@ -440,6 +440,33 @@ button, input { font: inherit; }
 .pnl-up { color: #006a30; }
 .pnl-down { color: #b8324d; }
 
+/* v54.4 — Exit button on each open position row.  Disabled while busy. */
+.my-position-exit {
+  margin-top: 4px;
+  align-self: flex-end;
+  background: rgba(0, 26, 13, .08);
+  color: #001a0d;
+  border: 1px solid rgba(0, 26, 13, .15);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.my-position-exit:hover { background: rgba(0, 26, 13, .14); border-color: rgba(0, 26, 13, .25); }
+.my-position-exit:disabled { opacity: .5; cursor: not-allowed; }
+.my-position-exit-error {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  background: rgba(184, 50, 77, .12);
+  color: #b8324d;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
 /* v42 — site footer: thin bar at the bottom of the page, above the
    page edge.  Absolute-positioned so it doesn't push other content. */
 .site-footer {
