@@ -746,3 +746,52 @@ button, input { font: inherit; }
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================================
+ * v56.5 — Stream stability.
+ *
+ * Lock the layout against jitter when values tick.  Two tools:
+ *   1. `font-variant-numeric: tabular-nums` makes 0-9 all render at the same
+ *      width.  Means "$10.84M" and "$9.68M" don't bounce horizontally as the
+ *      MC updates, timer countdowns don't reflow each second, balance pills
+ *      stay still.
+ *   2. `min-width` reserves space on containers whose content can grow or
+ *      shrink (e.g. "1h 27m 3s" → "27m 3s").  Without this, the parent's
+ *      flexbox alignment shifts as the timer crosses one-hour or one-minute
+ *      boundaries.
+ *
+ * `contain: layout` on the predict + positions cards bounds reflow scope so
+ * a re-render inside doesn't trigger a re-layout of the whole hero grid.
+ * ============================================================================ */
+.mc-card,
+.mc-card *,
+.classic-float-card,
+.classic-float-card *,
+.timer-pill,
+.classic-token-pill,
+.option-card,
+.option-card *,
+.predict-summary,
+.predict-summary *,
+.my-positions,
+.my-positions *,
+.predict-head-right,
+.predict-head-right *,
+.amount-row input,
+.side-row button {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.timer-pill { min-width: 76px; text-align: center; }
+.mc-card strong { display: block; min-width: 6ch; }
+.classic-token-pill { min-width: 96px; text-align: center; }
+.option-time, .option-time-pill { min-width: 56px; text-align: right; display: inline-block; }
+.classic-float-card strong { display: block; min-width: 4ch; }
+
+/* v56.5 — bound reflow scope so a sub-component re-render doesn't ripple
+   through the entire hero grid layout calculation. */
+.classic-predict-card,
+.my-positions {
+  contain: layout style;
+}

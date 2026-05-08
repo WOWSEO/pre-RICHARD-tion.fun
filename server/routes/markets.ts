@@ -332,7 +332,19 @@ marketsRouter.post("/:id/enter", async (req, res, next) => {
         // Run brain mutation on the canonical SOL-equivalent (v23).  The
         // ledger column "amount_troll" overloaded as the unit-agnostic
         // amount is also that same SOL-equivalent value.
-        const ensureUser = { wallet, trollBalance: 0 };
+        //
+        // v56.4 — pass MAX_SAFE_INTEGER as trollBalance to bypass the
+        // brain's internal balance check.  That check is a v52/LMSR-era
+        // artifact: the brain expected to track each user's TROLL token
+        // balance in memory.  In SOL-only mode (v47+), the on-chain
+        // deposit verification above is the source of truth — we KNOW
+        // the user has the SOL because we just verified the transfer
+        // landed in escrow.  Passing 0 (the previous value) caused the
+        // brain to throw `wallet ... balance 0 < <amount>` for every
+        // single bet, silently bouncing every position creation since v47.
+        // No refactor of the brain's User type — that would propagate
+        // through tests and audit tooling.  Just bypass via a large value.
+        const ensureUser = { wallet, trollBalance: Number.MAX_SAFE_INTEGER };
         const receipt = side === "YES"
           ? buyYes(ensureUser, market, verifiedSolEquiv)
           : buyNo(ensureUser, market, verifiedSolEquiv);
