@@ -110,7 +110,13 @@ export const HANTA: CoinConfig = {
  * Static fallback registry, in display order.  TROLL first, then USDUC, then BUTT.
  * Server prefers the DB; this is the offline / fresh-install fallback.
  */
-export const COINS: CoinConfig[] = [TROLL, USDUC, BUTT, HANTA];
+/**
+ * Static fallback registry, in display order.  v54.7: HANTA leads as the
+ * default coin, followed by TROLL/USDUC/BUTT.  Server prefers the DB
+ * (supported_coins.display_order); this is the offline / fresh-install
+ * fallback and matches the production seed.
+ */
+export const COINS: CoinConfig[] = [HANTA, TROLL, USDUC, BUTT];
 
 /** Lookup by mint.  Returns undefined for unknown mints. */
 export function findCoinByMint(mint: string): CoinConfig | undefined {
@@ -123,5 +129,6 @@ export function findCoinBySymbol(symbol: string): CoinConfig | undefined {
   return COINS.find((c) => c.symbol.toUpperCase() === s);
 }
 
-/** Default coin if no coin specified.  Stable across the app. */
-export const DEFAULT_COIN: CoinConfig = TROLL;
+/** Default coin if no coin specified.  Stable across the app.
+ *  v54.7: switched from TROLL to HANTA so HANTA is the landing-page default. */
+export const DEFAULT_COIN: CoinConfig = HANTA;
