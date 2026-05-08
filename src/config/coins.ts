@@ -86,10 +86,31 @@ export const BUTT: CoinConfig = {
 };
 
 /**
+ * HANTA — Hantavirus.  Pump.fun memecoin.  Added v54.6.  Liquidity assumed
+ * low until measured; 15% threshold matches BUTT until we have data.
+ */
+export const HANTA: CoinConfig = {
+  symbol: "HANTA",
+  name: "Hantavirus",
+  mintAddress: "2tXpgu2DLTsPUf9zFmuZmA4xrYxXKBTpVq9wAM7hzs9y",
+  decimals: 6,
+  pumpfunUrl: "https://pump.fun/coin/2tXpgu2DLTsPUf9zFmuZmA4xrYxXKBTpVq9wAM7hzs9y",
+  dexscreenerSource:
+    "https://api.dexscreener.com/token-pairs/v1/solana/2tXpgu2DLTsPUf9zFmuZmA4xrYxXKBTpVq9wAM7hzs9y",
+  geckoterminalSource:
+    "https://api.geckoterminal.com/api/v2/networks/solana/tokens/2tXpgu2DLTsPUf9zFmuZmA4xrYxXKBTpVq9wAM7hzs9y",
+  heliusSource: "https://mainnet.helius-rpc.com/?api-key=PLACEHOLDER",
+  active: true,
+  minLiquidityUsd: 25_000,
+  minVolume24hUsd: 10_000,
+  sourceDisagreementThreshold: 0.15,
+};
+
+/**
  * Static fallback registry, in display order.  TROLL first, then USDUC, then BUTT.
  * Server prefers the DB; this is the offline / fresh-install fallback.
  */
-export const COINS: CoinConfig[] = [TROLL, USDUC, BUTT];
+export const COINS: CoinConfig[] = [TROLL, USDUC, BUTT, HANTA];
 
 /** Lookup by mint.  Returns undefined for unknown mints. */
 export function findCoinByMint(mint: string): CoinConfig | undefined {

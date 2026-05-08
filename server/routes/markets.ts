@@ -138,6 +138,17 @@ marketsRouter.post("/:id/quote", async (req, res, next) => {
 /* ========================================================================== */
 marketsRouter.post("/:id/enter", async (req, res, next) => {
   const sb = db();
+  // v54.6 — track these in outer scope so the outer catch can update the
+  // deposit row and queue an automatic refund.  Before this fix, any
+  // unhandled error after deposit insertion left the row stuck at
+  // 'pending' with no failure_reason, requiring manual SQL recovery.
+  let depositId: number | null = null;
+  let postVerifyState: {
+    verifiedSolEquiv: number;
+    marketId: string;
+    wallet: string;
+    signature: string;
+  } | null = null;
   try {
     const body = req.body as {
       wallet?: string;
@@ -214,6 +225,7 @@ marketsRouter.post("/:id/enter", async (req, res, next) => {
       .select("id")
       .single<{ id: number }>();
     if (depErr) throw depErr;
+    depositId = deposit.id;
     console.info(
       `[entry] deposit-row-inserted id=${deposit.id} sig=${shortSig} ` +
         `solEquiv=${solEquiv}`,
@@ -267,6 +279,14 @@ marketsRouter.post("/:id/enter", async (req, res, next) => {
       `[entry] verification-OK depositId=${deposit.id} sig=${shortSig} ` +
         `solEquiv=${verifiedSolEquiv}`,
     );
+    // v54.6 — record the post-verify state.  From this point on, SOL is
+    // confirmed in escrow.  Any unhandled error needs to refund the user.
+    postVerifyState = {
+      verifiedSolEquiv,
+      marketId: req.params.id!,
+      wallet,
+      signature,
+    };
 
     // 5) Retry loop: load → brain → sync.  On lock conflict, reload and try again.
     let lastErr: Error | null = null;
@@ -394,6 +414,73 @@ marketsRouter.post("/:id/enter", async (req, res, next) => {
     console.error(`[markets/enter] lock contention exhausted retries for deposit ${deposit.id}`, lastErr);
     return res.status(503).json({ error: "lock_contention", reason: lastErr?.message });
   } catch (err) {
+    // v54.6 — auto-recovery for unhandled errors after deposit insertion.
+    //
+    // Before this fix, the silent path was: deposit row inserted as
+    // 'pending', some unhandled error occurred between verification and
+    // position creation, the catch returned 500, and the deposit stayed
+    // 'pending' forever with `failure_reason=null`.  The user's SOL sat
+    // in escrow with no record of why, requiring manual SQL recovery.
+    //
+    // Now we always update the deposit row on the way out, and if SOL
+    // was already verified in escrow, we automatically queue a refund.
+    const errMsg = (err as Error).message ?? "unknown_error";
+    console.error(
+      `[markets/enter] outer-catch depositId=${depositId ?? "null"} ` +
+        `postVerify=${postVerifyState ? "yes" : "no"} err=${errMsg}`,
+      err,
+    );
+    if (depositId != null) {
+      try {
+        await sb
+          .from("escrow_deposits")
+          .update({
+            status: "failed",
+            failure_reason: `unhandled_error_v54.6: ${errMsg.slice(0, 200)}`,
+          })
+          .eq("id", depositId);
+      } catch (markErr) {
+        console.error(`[markets/enter] failed to mark deposit ${depositId} failed:`, markErr);
+      }
+    }
+    if (postVerifyState != null) {
+      // SOL is on-chain in escrow.  Queue a refund automatically so the
+      // user gets it back within one payouts/run cron tick (~1 minute)
+      // instead of waiting for manual SQL.
+      try {
+        // Idempotency: don't double-queue if a refund already exists for
+        // this signature/wallet/market.
+        const { data: existingRefund } = await sb
+          .from("escrow_withdrawals")
+          .select("id")
+          .eq("market_id", postVerifyState.marketId)
+          .eq("wallet", postVerifyState.wallet)
+          .eq("reason", "refund")
+          .maybeSingle();
+        if (!existingRefund) {
+          await sb.from("escrow_withdrawals").insert({
+            market_id: postVerifyState.marketId,
+            wallet: postVerifyState.wallet,
+            amount_troll: postVerifyState.verifiedSolEquiv.toString(),
+            currency: "sol",
+            reason: "refund",
+            status: "pending",
+            position_id: null,
+            trade_id: null,
+          });
+          console.info(
+            `[markets/enter] auto-refund queued depositId=${depositId} ` +
+              `wallet=${postVerifyState.wallet} amount=${postVerifyState.verifiedSolEquiv}`,
+          );
+        } else {
+          console.info(
+            `[markets/enter] auto-refund skipped (already queued) depositId=${depositId}`,
+          );
+        }
+      } catch (refundErr) {
+        console.error(`[markets/enter] auto-refund queue failed:`, refundErr);
+      }
+    }
     next(err);
   }
 });
