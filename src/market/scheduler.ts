@@ -19,9 +19,34 @@ import { newAmmState, getPricesCents } from "./pricingEngine";
  * on the close time so snapshots are collected symmetrically around it.
  */
 
-let _marketCounter = 0;
+/**
+ * Generate a primary-key for a new market.
+ *
+ * v56.1 — switched from a global in-memory counter (`_marketCounter`) to a
+ * timestamp-based suffix.  The old counter reset on every Render redeploy,
+ * causing PK collisions with old rows from previous server lifetimes
+ * (manifested as `race_lost` results from the seeder for any coin/schedule
+ * whose previous IDs landed in the new counter's range).  The previous
+ * counter was also global across coins, so IDs were non-monotonic per
+ * (coin, schedule) — see e.g. TROLL-15m-68 created after TROLL-15m-72 in
+ * production data.
+ *
+ * The new format `{symbol}-{schedule}-{epoch36}{rand36}`:
+ *   - `epoch36` is `Date.now().toString(36)` — monotonic by clock,
+ *     8 chars at current time (~year 2059 before 9 chars).
+ *   - `rand36` is a 4-char random suffix — protects against the
+ *     vanishingly rare case of two markets created within the same ms.
+ *   - Total ID length ~22-25 chars.  URL-safe (no slashes/colons).
+ *
+ * Old IDs (`TROLL-15m-68`) remain valid and unchanged in the DB.  This
+ * change only affects newly-created markets going forward.
+ */
 function nextMarketId(symbol: string, schedule: ScheduleType): string {
-  return `${symbol}-${schedule}-${++_marketCounter}`;
+  const epoch36 = Date.now().toString(36);
+  const rand36 = Math.floor(Math.random() * 36 ** 4)
+    .toString(36)
+    .padStart(4, "0");
+  return `${symbol}-${schedule}-${epoch36}${rand36}`;
 }
 
 /** Window length in seconds for a given schedule. */
