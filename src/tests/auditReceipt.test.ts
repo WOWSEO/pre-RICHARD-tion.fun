@@ -205,3 +205,122 @@ describe("audit receipt determinism", () => {
     expect(a.snapshotBundleHash).toBe(b.snapshotBundleHash);
   });
 });
+
+describe("v54.5 — per-coin sourceDisagreementThreshold override", () => {
+  it("settles cleanly when sources disagree by 6% under a coin with 15% threshold", async () => {
+    const { MemoryStore } = await import("../store/memoryStore");
+    const { createMarket } = await import("../market/scheduler");
+    const { MockProvider } = await import("../providers/mockProvider");
+    const { buyYes, buyNo } = await import("../market/tradeEngine");
+
+    const store = new MemoryStore();
+    const alice = store.upsertUser("alice", 1000);
+    const bob = store.upsertUser("bob", 1000);
+    const market = store.addMarket(
+      createMarket({
+        symbol: "BUTT",
+        scheduleType: "15m",
+        closeAt: new Date(Date.now() - 60_000),
+        targetMc: 10_000_000,
+      }),
+    );
+    buyYes(alice, market, 100);
+    buyNo(bob, market, 100);
+
+    // Sources disagree by ~6% (well above the global 2.5% default but
+    // under BUTT's 0.15 override).
+    const dex = new MockProvider("dexscreener", { seed: 1 })
+      .setMarketCap(11_000_000)
+      .setLiquidity(80_000)
+      .setVolume24h(150_000);
+    const gecko = new MockProvider("geckoterminal", { seed: 2 })
+      .setMarketCap(11_700_000) // ~6.4% higher than dex
+      .setLiquidity(80_000)
+      .setVolume24h(150_000);
+
+    // Use a fake coin config with the BUTT-style override.
+    const buttLikeCoin = {
+      symbol: "BUTT",
+      name: "Buttcoin",
+      mintAddress: "Cm6fNnMk7NfzStP9CZpsQA2v3jjzbcYGAxdJySmHpump",
+      decimals: 6,
+      pumpfunUrl: "",
+      dexscreenerSource: "",
+      geckoterminalSource: "",
+      heliusSource: "",
+      active: true,
+      minLiquidityUsd: 25_000,
+      minVolume24hUsd: 10_000,
+      sourceDisagreementThreshold: 0.15,
+    };
+
+    const receipt = await settleMarket({
+      market,
+      coin: buttLikeCoin,
+      providers: [dex, gecko],
+      users: store.users,
+    });
+
+    // 6.4% disagreement is below the 15% threshold → resolves cleanly,
+    // not VOID(source_disagreement).
+    expect(receipt.outcome).not.toBe("VOID");
+    expect(receipt.canonicalMc).not.toBeNull();
+  });
+
+  it("still voids on source_disagreement when disagreement exceeds the per-coin threshold", async () => {
+    const { MemoryStore } = await import("../store/memoryStore");
+    const { createMarket } = await import("../market/scheduler");
+    const { MockProvider } = await import("../providers/mockProvider");
+    const { buyYes, buyNo } = await import("../market/tradeEngine");
+
+    const store = new MemoryStore();
+    const alice = store.upsertUser("alice", 1000);
+    const bob = store.upsertUser("bob", 1000);
+    const market = store.addMarket(
+      createMarket({
+        symbol: "BUTT",
+        scheduleType: "15m",
+        closeAt: new Date(Date.now() - 60_000),
+        targetMc: 10_000_000,
+      }),
+    );
+    buyYes(alice, market, 100);
+    buyNo(bob, market, 100);
+
+    // Sources disagree by 25% — even with BUTT's loose 15% override,
+    // this still voids.
+    const dex = new MockProvider("dexscreener", { seed: 1 })
+      .setMarketCap(10_000_000)
+      .setLiquidity(80_000)
+      .setVolume24h(150_000);
+    const gecko = new MockProvider("geckoterminal", { seed: 2 })
+      .setMarketCap(13_000_000) // 25%+ higher
+      .setLiquidity(80_000)
+      .setVolume24h(150_000);
+
+    const buttLikeCoin = {
+      symbol: "BUTT",
+      name: "Buttcoin",
+      mintAddress: "Cm6fNnMk7NfzStP9CZpsQA2v3jjzbcYGAxdJySmHpump",
+      decimals: 6,
+      pumpfunUrl: "",
+      dexscreenerSource: "",
+      geckoterminalSource: "",
+      heliusSource: "",
+      active: true,
+      minLiquidityUsd: 25_000,
+      minVolume24hUsd: 10_000,
+      sourceDisagreementThreshold: 0.15,
+    };
+
+    const receipt = await settleMarket({
+      market,
+      coin: buttLikeCoin,
+      providers: [dex, gecko],
+      users: store.users,
+    });
+
+    expect(receipt.outcome).toBe("VOID");
+    expect(receipt.voidReason).toBe("source_disagreement");
+  });
+});

@@ -31,6 +31,21 @@ export interface CoinConfig {
   minLiquidityUsd: number;
   /** 24h volume floor in USD. Same idea. */
   minVolume24hUsd: number;
+  /**
+   * v54.5 — optional per-coin threshold for VOID(source_disagreement).
+   *
+   * If unset, the resolver uses the global default (0.025 = 2.5%).  Tighter
+   * values are stricter; looser values let lower-liquidity coins settle.
+   *
+   * Values used in production:
+   *   TROLL ($2.5M liquidity)  → omit (uses 2.5% default)
+   *   USDUC ($908K liquidity)  → 0.05  (5%)
+   *   BUTT  ($13K  liquidity)  → 0.15  (15%)
+   *
+   * Below this threshold, the resolver accepts the median of medians as
+   * canonical_mc.  Above it, the market voids with `source_disagreement`.
+   */
+  sourceDisagreementThreshold?: number;
 }
 
 /**

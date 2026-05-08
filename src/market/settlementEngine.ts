@@ -458,12 +458,17 @@ export async function settleMarket(args: {
   market.status = "settling";
 
   const snapshots = await collectSnapshotsSynthetic(market, coin, providers);
+  // v54.5 — threshold precedence: explicit options override > per-coin
+  // override on CoinConfig > engine default of 2.5%.  Most production calls
+  // omit options entirely and let the per-coin value win.
+  const resolvedThreshold =
+    options.sourceDisagreementThreshold ?? coin.sourceDisagreementThreshold ?? 0.025;
   const resolverOutput = resolve({
     market,
     snapshots,
     minLiquidityUsd: coin.minLiquidityUsd,
     minVolume24hUsd: coin.minVolume24hUsd,
-    sourceDisagreementThreshold: options.sourceDisagreementThreshold ?? 0.025,
+    sourceDisagreementThreshold: resolvedThreshold,
     deadZoneThreshold: options.deadZoneThreshold ?? 0.001,
     minSnapshotsPerSource: options.minSnapshotsPerSource ?? 4,
   });

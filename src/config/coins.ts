@@ -57,6 +57,8 @@ export const USDUC: CoinConfig = {
   active: true,
   minLiquidityUsd: 25_000,
   minVolume24hUsd: 10_000,
+  // v54.5 — moderate liquidity, 5% disagreement tolerance.
+  sourceDisagreementThreshold: 0.05,
 };
 
 /**
@@ -76,6 +78,11 @@ export const BUTT: CoinConfig = {
   active: true,
   minLiquidityUsd: 25_000,
   minVolume24hUsd: 10_000,
+  // v54.5 — very low liquidity ($13K), needs wide disagreement tolerance
+  // so DexScreener and GeckoTerminal price snapshots can settle.  Without
+  // this, every BUTT market voids with `source_disagreement` (see Day 3
+  // diagnosis: 4 of 4 closed BUTT 15m markets voided this way).
+  sourceDisagreementThreshold: 0.15,
 };
 
 /**

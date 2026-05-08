@@ -630,7 +630,8 @@ function ClassicHome() {
               {selectedCoin ? `$${selectedCoin.symbol} holder market` : "memecoin holder market"}
             </p>
             <h1>
-              Prediction markets for {selectedCoin ? `$${selectedCoin.symbol}` : "memecoin"} holders.
+              Prediction
+              <span className="classic-h1-tagline">markets for Pump.Fun coins.</span>
             </h1>
             <p className="classic-subcopy">
               Bet SOL on whether {selectedCoin ? `$${selectedCoin.symbol}` : "the coin's"} market cap will be higher or lower at the close. Pick a 15-minute, hourly, or daily window. Pick YES or NO. Win, get paid out instantly in SOL — no claims, no waiting. Markets are real, escrowed on-chain, and settled by oracle median.
