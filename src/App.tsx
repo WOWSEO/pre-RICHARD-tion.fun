@@ -106,12 +106,24 @@ const SCHEDULE_LABEL: Record<ScheduleType, string> = {
   daily: "Daily · 7PM ET",
 };
 
-/** Build the "1.8M $TROLL" / "7.4K $TROLL" / "421 $TROLL" volume label. */
+/**
+ * Build the volume label for a market option button.
+ *
+ * Output is in SOL (since v47 SOL-only).  Function name kept as
+ * `formatVolumeTroll` for legacy reasons — the underlying schema column is
+ * `amount_troll` but the values are SOL units.  Renaming would touch every
+ * call site for no user-visible benefit.
+ *
+ *   1.8 SOL  /  7.4 SOL  /  0.42 SOL  /  0 SOL
+ *
+ * SOL volumes are usually small (fractional), so we don't bother with K/M
+ * scaling — that was an LMSR-era artifact when bets were $TROLL tokens.
+ */
 function formatVolumeTroll(volume: number): string {
-  if (!Number.isFinite(volume) || volume <= 0) return "0 $TROLL";
-  if (volume >= 1_000_000) return `${(volume / 1_000_000).toFixed(1)}M $TROLL`;
-  if (volume >= 1_000) return `${(volume / 1_000).toFixed(1)}K $TROLL`;
-  return `${Math.round(volume)} $TROLL`;
+  if (!Number.isFinite(volume) || volume <= 0) return "0 SOL";
+  if (volume >= 100) return `${volume.toFixed(0)} SOL`;
+  if (volume >= 1) return `${volume.toFixed(2)} SOL`;
+  return `${volume.toFixed(3)} SOL`;
 }
 
 /** Whole-cent display, floored, kept in [1, 99] to match server clamping. */

@@ -37,7 +37,7 @@ export function MarketCard({ market }: { market: MarketSummary }) {
       </div>
 
       <p className="font-display text-lg font-semibold leading-snug tracking-tight text-ink-200 sm:text-xl">
-        Will $TROLL be over{" "}
+        Will ${market.symbol} be over{" "}
         <span className="bg-yes/30 px-1.5 py-0.5 rounded">{targetMcLabel}</span>{" "}
         MC at <span className="font-mono">{closeLabel}</span>?
       </p>

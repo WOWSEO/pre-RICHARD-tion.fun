@@ -12,7 +12,7 @@ import type { MarketDetail } from "../services/apiClient";
 import { QuotePreview } from "./QuotePreview";
 
 /**
- * Trade panel — REAL $TROLL escrow flow.
+ * Trade panel — REAL SOL escrow flow.
  *
  * 1. Quote: POST /api/markets/:id/quote → server runs brain quote, returns TradeQuote
  * 2. Confirm: client builds SPL transfer to escrow ATA → Phantom signs → broadcast
@@ -81,9 +81,12 @@ export function PredictPanel({ market, escrowAccount, escrowSolAccount, onTradeC
   // an error (the YES/NO prices defaulting to 50¢/50¢ is correct here).
   const awaitingFirstTrade =
     tradable && market.volume === 0 && market.openInterest === 0;
-  // noTroll — wallet connected, balance loaded, exactly zero.  Distinct from
-  // "balance still loading" (balance === null) so the prompt doesn't flash.
-  const noTroll = wallet.connected && balance.balance === 0;
+  // v54.2 (wording cleanup): noTroll prompt removed — was checking TROLL SPL
+  // balance and prompting the user to "add TROLL" even though the platform
+  // is SOL-only since v47.  Insufficient-SOL is caught at submit time by the
+  // server's quote/enter pipeline.  Variable preserved as `false` so the
+  // existing references downstream don't need to change.
+  const noTroll = false;
 
   // Auto-fetch quote whenever (side, amount) settles
   useEffect(() => {
@@ -156,7 +159,7 @@ export function PredictPanel({ market, escrowAccount, escrowSolAccount, onTradeC
       const decimals = await getTrollDecimals(connection, trollMint);
 
       // Phantom signs + we broadcast + confirm.
-      // From the user's perspective this whole step is "Sign $TROLL entry".
+      // From the user's perspective this whole step is "Sign SOL entry".
       setPhase({ kind: "broadcasting" });
       const signature = await depositToEscrow({
         wallet,
@@ -226,7 +229,7 @@ export function PredictPanel({ market, escrowAccount, escrowSolAccount, onTradeC
       <div className="mt-5">
         <div className="flex items-center justify-between">
           <label htmlFor="amount" className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-100/70">
-            Amount $TROLL
+            Amount SOL
           </label>
           <button
             type="button"
@@ -250,7 +253,7 @@ export function PredictPanel({ market, escrowAccount, escrowSolAccount, onTradeC
             className="flex-1 bg-transparent font-display text-2xl font-bold tabular-nums text-ink-200 outline-none placeholder:text-ink-100/30"
             disabled={!tradable || isBusy(phase)}
           />
-          <span className="font-mono text-xs text-ink-100/60">$TROLL</span>
+          <span className="font-mono text-xs text-ink-100/60">SOL</span>
         </div>
         <div className="mt-1.5 flex justify-between text-[11px] text-ink-100/70">
           <span>
@@ -277,22 +280,15 @@ export function PredictPanel({ market, escrowAccount, escrowSolAccount, onTradeC
       {/* Phase status messages */}
       <PhaseBadge phase={phase} />
 
-      {/* No-$TROLL prompt — req 7.  Shown only when wallet is connected AND
-          balance has loaded AND it's exactly zero.  Above the (mutually-
-          exclusive) insufficient block so the user sees the right copy
-          whether they have nothing or have less than they typed. */}
-      {noTroll && phase.kind !== "ok" && (
-        <div className="mt-3 rounded-lg bg-no/15 px-3 py-2 text-xs text-no-deep ring-1 ring-no/30">
-          <p className="font-semibold">No $TROLL detected</p>
-          <p className="mt-0.5 text-no-deep/85">
-            Add $TROLL to your wallet to make a prediction.
-          </p>
-        </div>
-      )}
+      {/* v54.2 (wording cleanup): the "No $TROLL detected" prompt was removed.
+          It checked the TROLL SPL balance and prompted users to add TROLL,
+          but the platform has been SOL-only since v47, so that prompt was
+          actively misleading.  Insufficient-SOL is still caught at submit
+          via the existing balance check below. */}
 
       {insufficient && phase.kind !== "error" && (
         <p className="mt-3 rounded-lg bg-no/15 px-3 py-2 text-xs text-no-deep ring-1 ring-no/30">
-          You only have {formatTrollBalance(balance.balance!)} $TROLL — top up your wallet to enter this size.
+          You only have {formatTrollBalance(balance.balance!)} SOL — top up your wallet to enter this size.
         </p>
       )}
 
@@ -317,7 +313,7 @@ export function PredictPanel({ market, escrowAccount, escrowSolAccount, onTradeC
       </button>
 
       <p className="mt-2.5 text-center text-[10px] leading-relaxed text-ink-100/60">
-        Real $TROLL · 18+ · Tokens transfer to escrow on confirm · Server verifies before your position is recorded
+        Real SOL · 18+ · SOL transfers to escrow on confirm · Server verifies before your position is recorded
       </p>
     </div>
   );
@@ -336,7 +332,7 @@ function confirmLabel(
 ): string {
   // req 7: disconnected → "Connect wallet to predict"
   if (!connected) return "Connect wallet to predict";
-  if (noTroll) return "No $TROLL detected";
+  if (noTroll) return "No SOL detected";
   if (!tradable) return "Market closed";
   switch (phase.kind) {
     case "idle":

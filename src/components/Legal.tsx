@@ -80,10 +80,10 @@ function AboutContent() {
     <article>
       <h2>About pre-RICHARD-tion.fun</h2>
       <p>
-        pre-RICHARD-tion.fun is a permissionless prediction market for $TROLL
-        holders. Bet SOL on whether the $TROLL market cap will be higher or
-        lower than a target at the close of a 15-minute, hourly, or daily
-        window.
+        pre-RICHARD-tion.fun is a permissionless prediction market for
+        memecoin holders. Bet SOL on whether a supported coin's market cap
+        will be higher or lower than a target at the close of a 15-minute,
+        hourly, or daily window.
       </p>
       <h3>How it works</h3>
       <ol>

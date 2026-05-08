@@ -87,7 +87,7 @@ export function ClaimsPage() {
               Payouts
             </p>
             <h1 className="mt-1 font-display text-3xl font-bold tracking-tightest text-cream-100 sm:text-4xl">
-              Your $TROLL claims
+              Your SOL claims
             </h1>
             <p className="mt-1 font-mono text-xs text-cream-100/55">
               {buckets.claimable.length} claimable ·{" "}
@@ -200,7 +200,7 @@ export function ClaimsPage() {
         <p className="mt-8 text-[11px] text-cream-100/50">
           Pending = the escrow row is queued; claim sends it now. Sent =
           transaction broadcast, awaiting confirmation. Confirmed =
-          $TROLL is in your wallet (Solscan link).
+          SOL is in your wallet (Solscan link).
         </p>
       </div>
     </main>

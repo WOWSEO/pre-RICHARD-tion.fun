@@ -12,9 +12,10 @@ import { api } from "../services/apiClient";
  *   NO  position value = shares × noPriceCents  / 100
  *   P/L                = current_value − cost_basis_troll
  *
- * Same units (TROLL or SOL) for cost basis and value.  The UI shows TROLL
- * because cost_basis_troll is the schema's denomination (SOL bets are
- * converted to TROLL-equivalent at entry time, see v23 currencyConverter).
+ * Units are SOL for both cost basis and value (since v47 SOL-only).  The
+ * schema column `cost_basis_troll` keeps its legacy name — the values it
+ * holds are SOL units.  Renaming the column would require a migration with
+ * no user-visible benefit.
  */
 interface MyPositionsProps {
   walletAddress: string | null;

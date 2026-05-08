@@ -106,7 +106,7 @@ export function ClaimablePayouts({
               </p>
               <p className="mt-0.5 font-display text-lg font-bold tabular-nums text-cream-100">
                 {formatTrollBalance(amount)}{" "}
-                <span className="text-xs font-medium text-cream-100/60">$TROLL</span>
+                <span className="text-xs font-medium text-cream-100/60">SOL</span>
               </p>
               {w.failure_reason && (
                 <p className="mt-1 text-[11px] text-no-deep">⚠ {w.failure_reason}</p>

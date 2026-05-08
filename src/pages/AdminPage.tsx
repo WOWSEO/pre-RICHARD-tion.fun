@@ -179,11 +179,11 @@ export function AdminPage() {
             />
             <Stat
               label="Confirmed deposits"
-              value={`${formatTrollBalance(overview.escrowConfirmedTotal)} $TROLL`}
+              value={`${formatTrollBalance(overview.escrowConfirmedTotal)} SOL`}
             />
             <Stat
               label="Pending withdrawals"
-              value={`${formatTrollBalance(overview.pendingWithdrawalTotal)} $TROLL`}
+              value={`${formatTrollBalance(overview.pendingWithdrawalTotal)} SOL`}
             />
           </div>
         )}
@@ -194,7 +194,7 @@ export function AdminPage() {
             Create one market (per schedule)
           </h2>
           <p className="mt-1 text-xs text-cream-100/55">
-            Picks the next 15-min/hourly/7PM-ET boundary, snapshots live $TROLL MC at insert time,
+            Picks the next 15-min/hourly/7PM-ET boundary, snapshots the coin's live MC at insert time,
             and sets that as the higher/lower threshold. Skipped (with reason) if a market for that
             schedule is already active. To fill all 3 slots at once, use{" "}
             <span className="font-mono">Seed markets</span> at the top of the page.
@@ -309,7 +309,7 @@ export function AdminPage() {
                   >
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-mono text-cream-100">
-                        {shortenAddress(d.wallet)} → {Number.parseFloat(d.amount_troll).toFixed(2)} $TROLL · {d.side}
+                        {shortenAddress(d.wallet)} → {Number.parseFloat(d.amount_troll).toFixed(2)} SOL · {d.side}
                       </p>
                       <p className="truncate font-mono text-[10px] text-cream-100/50">
                         sig {shortenAddress(d.signature)} · {d.market_id}
@@ -349,7 +349,7 @@ export function AdminPage() {
                   >
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-mono text-cream-100">
-                        {Number.parseFloat(w.amount_troll).toFixed(2)} $TROLL → {shortenAddress(w.wallet)} · {w.reason}
+                        {Number.parseFloat(w.amount_troll).toFixed(2)} SOL → {shortenAddress(w.wallet)} · {w.reason}
                       </p>
                       <p className="truncate font-mono text-[10px] text-cream-100/50">
                         {w.market_id}
@@ -458,7 +458,7 @@ function CreateMarketForm({
         </select>
       </Field>
       <div className="sm:col-span-1 flex items-end text-xs text-cream-100/55">
-        Open MC = live $TROLL MC at insert time. Close = next boundary.
+        Open MC = live coin MC at insert time. Close = next boundary.
       </div>
       <div className="flex items-end">
         <button
